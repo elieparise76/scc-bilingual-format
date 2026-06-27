@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Environnements / éditeurs
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Claude Code — réglages locaux uniquement (settings.json partagé reste suivi)
+.claude/settings.local.json
+
+# Documents Word générés (sortie du pipeline) et fichiers temporaires Office
+*.docx
+~$*
