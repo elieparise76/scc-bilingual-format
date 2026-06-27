@@ -69,6 +69,16 @@ def main(argv: list[str] | None = None) -> int:
         title_en=decision_en.title,
         citation_fr=decision_fr.neutral_citation,
         citation_en=decision_en.neutral_citation,
+        hearing_fr=decision_fr.hearing_date,
+        hearing_en=decision_en.hearing_date,
+        date_fr=decision_fr.decision_date,
+        date_en=decision_en.decision_date,
+        appeal_fr=decision_fr.appeal_from,
+        appeal_en=decision_en.appeal_from,
+        catchwords_fr=decision_fr.catchwords,
+        catchwords_en=decision_en.catchwords,
+        held_fr=decision_fr.held,
+        held_en=decision_en.held,
         lang_order=args.lang_order,
     )
     written = render_docx(sections, metadata, output_path)

@@ -133,6 +133,76 @@ def _parse_header(page) -> tuple[str, str]:
     return title, citation
 
 
+def _cover_right_text(page) -> str:
+    """Texte de la colonne droite de la couverture (dates/dossier), recadré.
+
+    On recadre car le label sur deux lignes (« JUGEMENT RENDU ») serait sinon
+    entrelacé par `extract_text()` global."""
+    crop = page.crop((310, 230, page.width, 480))
+    return re.sub(r"[ \t]+", " ", crop.extract_text() or "")
+
+
+def _find_cover_date(text: str, label: str) -> str:
+    """Date suivant un libellé ; `re.S` car elle chevauche le saut de ligne."""
+    m = re.search(label + r"\s*:?\s*(.+?\d{4})", text, re.S)
+    return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
+
+
+_HELD = re.compile(
+    r"(?:Held|Arrêt)\s*(?:\([^)]*\))?\s*:\s*.{1,400}?\.(?=\s+[A-ZÀ-Ü]|\s*$)", re.S
+)
+
+
+def _extract_held(pages) -> str:
+    """Mention « Held (…): … » / « Arrêt (…) : … » (1re phrase = dispositif)."""
+    full = "\n".join((p.extract_text() or "") for p in pages[2:8])
+    m = _HELD.search(full)
+    return re.sub(r"\s+", " ", m.group(0)).strip() if m else ""
+
+
+def _is_italic(word: dict) -> bool:
+    return "Italic" in (word.get("fontname") or "")
+
+
+def _extract_appeal_and_catchwords(pages) -> tuple[str, str]:
+    """(« ON APPEAL FROM … », mots-clés) depuis le sommaire.
+
+    Ancre = « ON APPEAL FROM » / « EN APPEL DE » (mot APPEAL/APPEL en capitales).
+    La mention d'appel = mots **non italiques** jusqu'au 1er italique ; les
+    mots-clés = le **bloc italique** qui suit (le sommaire en prose qui suit est
+    en romain → frontière nette)."""
+    words: List[dict] = []
+    for pg in pages[2:10]:
+        words += pg.extract_words(extra_attrs=["fontname"])
+
+    anchor = next(
+        (i for i, w in enumerate(words) if w["text"] in ("APPEAL", "APPEL")), None
+    )
+    if anchor is None:
+        return "", ""
+
+    i = max(0, anchor - 1)  # inclure « ON » / « EN »
+    appeal: List[str] = []
+    while i < len(words) and not _is_italic(words[i]):
+        appeal.append(words[i]["text"])
+        i += 1
+
+    catch: List[str] = []
+    while i < len(words):
+        w = words[i]
+        if _is_italic(w):
+            catch.append(w["text"])
+        elif re.search(r"[A-Za-zÀ-ÿ]{2,}", w["text"]):
+            break  # 1er mot de prose (romain) → fin des mots-clés
+        else:
+            catch.append(w["text"])  # ponctuation entre fragments italiques
+        i += 1
+
+    appeal_from = re.sub(r"\s+", " ", " ".join(appeal)).strip()
+    catchwords = re.sub(r"\s+", " ", " ".join(catch)).strip()
+    return appeal_from, catchwords
+
+
 # --------------------------------------------------------------------------- #
 # 2. Structure des opinions
 # --------------------------------------------------------------------------- #
@@ -442,6 +512,11 @@ def parse_pdf(pdf_bytes: bytes) -> Decision:
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         pages = pdf.pages
         title, citation = _parse_header(pages[0])
+        right = _cover_right_text(pages[0])
+        hearing_date = _find_cover_date(right, r"(?:APPEALS? HEARD|APPELS? ENTENDUS?)")
+        decision_date = _find_cover_date(right, r"(?:JUDGMENT RENDERED|JUGEMENT RENDU)")
+        appeal_from, catchwords = _extract_appeal_and_catchwords(pages)
+        held = _extract_held(pages)
         opinions = _parse_opinions(pages)
         paras = _extract_paragraphs(pages)
         lead_ins = _extract_lead_ins(pages, opinions)
@@ -450,4 +525,9 @@ def parse_pdf(pdf_bytes: bytes) -> Decision:
         title=title,
         neutral_citation=citation,
         sections=_build_sections(opinions, paras, lead_ins),
+        hearing_date=hearing_date,
+        decision_date=decision_date,
+        appeal_from=appeal_from,
+        catchwords=catchwords,
+        held=held,
     )

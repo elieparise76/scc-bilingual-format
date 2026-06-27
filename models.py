@@ -64,6 +64,11 @@ class Decision:
     title: str
     neutral_citation: str  # ex. "2024 CSC 5"
     sections: List[Section] = field(default_factory=list)
+    hearing_date: str = ""   # date d'audition, ex. "March 26, 2024"
+    decision_date: str = ""  # date du jugement, ex. "February 9, 2024"
+    appeal_from: str = ""    # ex. "ON APPEAL FROM THE COURT OF APPEAL FOR QUEBEC"
+    catchwords: str = ""     # mots-clés/tags du sommaire (bloc en italique)
+    held: str = ""           # mention « Held (…): … » / « Arrêt (…) : … »
 
     @property
     def paragraphs(self) -> List[Paragraph]:

@@ -28,14 +28,15 @@ marges 0,4 po, bordures de tableau blanches, espace accru entre les colonnes.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import List, Optional
 
 from docx import Document
-from docx.enum.section import WD_SECTION
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Emu, Inches, Pt, RGBColor
@@ -64,24 +65,55 @@ _ROLE_LABELS = {
 }
 _COURT_AUTHORS = {"La Cour", "The Court"}
 
+# Libellés de la page de garde (fr, en).
+_HEARD_LABEL = {"fr": "Appel entendu", "en": "Appeal heard"}
+_DATE_LABEL = {"fr": "Jugement rendu", "en": "Judgment rendered"}
+_TOC_LABEL = {"fr": "Table des matières", "en": "Table of Contents"}
+# Taquet droit (avec points de conduite) pour la table des matières, dans une
+# cellule = largeur de texte de la cellule (_COL_W moins le gap intérieur).
+_TOC_TAB = Emu(_COL_W - _CELL_GAP)
+
 
 @dataclass
 class DocMetadata:
-    """Métadonnées d'en-tête pour le document généré."""
+    """Métadonnées de page de garde / en-tête, dans les deux langues."""
 
     title_fr: str
     title_en: str
     citation_fr: str
     citation_en: str
+    hearing_fr: str = ""
+    hearing_en: str = ""
+    date_fr: str = ""
+    date_en: str = ""
+    appeal_fr: str = ""
+    appeal_en: str = ""
+    catchwords_fr: str = ""
+    catchwords_en: str = ""
+    held_fr: str = ""
+    held_en: str = ""
     lang_order: str = "en"  # "en" → EN à gauche (défaut) ; "fr" → FR à gauche
 
-    @property
-    def cover_title(self) -> str:
-        return self.title_fr if self.lang_order == "fr" else self.title_en
+    def title(self, lang: str) -> str:
+        return self.title_fr if lang == "fr" else self.title_en
 
-    @property
-    def cover_citation(self) -> str:
-        return self.citation_fr if self.lang_order == "fr" else self.citation_en
+    def citation(self, lang: str) -> str:
+        return self.citation_fr if lang == "fr" else self.citation_en
+
+    def hearing(self, lang: str) -> str:
+        return self.hearing_fr if lang == "fr" else self.hearing_en
+
+    def date(self, lang: str) -> str:
+        return self.date_fr if lang == "fr" else self.date_en
+
+    def appeal(self, lang: str) -> str:
+        return self.appeal_fr if lang == "fr" else self.appeal_en
+
+    def catchwords(self, lang: str) -> str:
+        return self.catchwords_fr if lang == "fr" else self.catchwords_en
+
+    def held(self, lang: str) -> str:
+        return self.held_fr if lang == "fr" else self.held_en
 
 
 # --------------------------------------------------------------------------- #
@@ -315,36 +347,138 @@ def _setup_headers_footers(
 
 
 # --------------------------------------------------------------------------- #
-# Page de garde et table des matières
+# Page de garde bilingue (identité, mots-clés, table des matières)
 # --------------------------------------------------------------------------- #
-def _add_title_block(doc: Document, meta: DocMetadata) -> None:
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run(meta.cover_title)
-    run.bold = True
-    run.font.size = Pt(16)
+def _heading_level(heading: str) -> int:
+    """Niveau de plan d'un sous-titre, pour l'indentation de la table des matières."""
+    h = heading.lstrip()
+    if re.match(r"[IVXL]+\.", h):
+        return 0
+    if re.match(r"[A-Z]\.", h):
+        return 1
+    if re.match(r"\(\d+\)", h):
+        return 2
+    return 3  # (a), (i)…
 
-    cite = doc.add_paragraph()
-    cite.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = cite.add_run(meta.cover_citation)
-    run.font.size = Pt(12)
+
+def _section_toc(section: AlignedSection, lang: str) -> List[tuple]:
+    """[(sous-titre, n° de paragraphe, niveau)] d'une opinion, pour une langue."""
+    out: List[tuple] = []
+    for pair in section.pairs:
+        para = pair.fr if lang == "fr" else pair.en
+        if para:
+            out.extend((h, pair.number, _heading_level(h)) for h in para.headings)
+    return out
 
 
-def _add_toc(
-    doc: Document, sections: List[AlignedSection], lang_left: str, unanimous: bool
+def _new_aligned_table(doc: Document):
+    """Tableau 2 colonnes égales, bordures blanches (page de garde / opinions)."""
+    table = doc.add_table(rows=0, cols=2)
+    table.autofit = False
+    table.allow_autofit = False
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _set_table_borders_white(table)
+    return table
+
+
+def _set_run(run, size: int, bold: bool = False, italic: bool = False):
+    run.font.size = Pt(size)
+    run.bold, run.italic = bold, italic
+    return run
+
+
+def _bi_row(
+    table, lang_left, lang_right, text_fn, *, size=9, bold=False, italic=False,
+    align=WD_ALIGN_PARAGRAPH.LEFT, before=0,
 ) -> None:
-    lang_right = "en" if lang_left == "fr" else "fr"
-    heading = doc.add_paragraph()
-    run = heading.add_run("Table des matières / Contents")
-    run.bold = True
-    run.font.size = Pt(12)
+    """Ajoute une ligne (gauche/droite) ; chaque côté est `text_fn(lang)`.
 
-    for sec in sections:
-        nums = [p.number for p in sec.pairs]
-        rng = f"[{nums[0]}–{nums[-1]}]" if nums else ""
-        line = doc.add_paragraph(style="List Bullet")
-        line.add_run(f"{_section_label(sec, lang_left, unanimous)}  {rng}").bold = True
-        line.add_run(f"\n{_section_label(sec, lang_right, unanimous)}").italic = True
+    Une ligne par élément → les deux langues démarrent au même niveau (comme
+    les paragraphes du corps). Ligne omise si les deux côtés sont vides."""
+    left, right = text_fn(lang_left), text_fn(lang_right)
+    if not left and not right:
+        return
+    row = table.add_row()
+    for i, (cell, text) in enumerate(((row.cells[0], left), (row.cells[1], right))):
+        _set_cell_margins(cell, *_col_margins(i))
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        p = cell.paragraphs[0]
+        p.alignment = align
+        if before:
+            p.paragraph_format.space_before = Pt(before)
+        _set_run(p.add_run(text), size, bold=bold, italic=italic)
+
+
+def _add_toc_row(table, left: tuple, right: tuple) -> None:
+    """Ligne de TDM ; left/right = (libellé, texte_droite, niveau).
+
+    Le libellé est indenté selon le niveau ; le texte de droite (n° ou plage)
+    est aligné à droite avec des points de conduite."""
+    row = table.add_row()
+    for i, (cell, item) in enumerate(((row.cells[0], left), (row.cells[1], right))):
+        _set_cell_margins(cell, *_col_margins(i))
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        label, right_text, level = item
+        p = cell.paragraphs[0]
+        pf = p.paragraph_format
+        pf.left_indent = Emu(Inches(0.13) * level)
+        _set_run(p.add_run(label), 9)
+        if right_text:
+            pf.tab_stops.add_tab_stop(_TOC_TAB, WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS)
+            p.add_run("\t")
+            _set_run(p.add_run(str(right_text)), 9)
+
+
+def _add_contents_toc(table, lang_left, lang_right, entries_fn) -> None:
+    """Table des matières : ligne de titre puis lignes appariées gauche/droite."""
+    _bi_row(table, lang_left, lang_right, lambda lang: _TOC_LABEL[lang],
+            size=10, bold=True, before=10)
+    left_items = entries_fn(lang_left)
+    right_items = entries_fn(lang_right)
+    for left, right in zip_longest(left_items, right_items, fillvalue=("", "", 0)):
+        _add_toc_row(table, left, right)
+
+
+def _add_front_matter(
+    doc: Document, meta: DocMetadata, sections: List[AlignedSection], lang_left: str
+) -> None:
+    """Page de garde bilingue : un élément par ligne, deux colonnes alignées.
+
+    Contenu de chaque côté, dans sa langue : identité (nom, citation, dates,
+    mention d'appel), mots-clés/tags, mention « Held / Arrêt », puis la table
+    des matières des **motifs** (rôle + auteur + plage de paragraphes)."""
+    lang_right = "en" if lang_left == "fr" else "fr"
+    unanimous = len(sections) == 1
+    table = _new_aligned_table(doc)
+    center = WD_ALIGN_PARAGRAPH.CENTER
+
+    def dated(label, getter):
+        return lambda lang: (
+            f"{label[lang]}{' : ' if lang == 'fr' else ': '}{getter(lang)}"
+            if getter(lang) else ""
+        )
+
+    _bi_row(table, lang_left, lang_right, meta.title, size=12, bold=True, align=center)
+    _bi_row(table, lang_left, lang_right, meta.citation, size=11, bold=True, align=center)
+    _bi_row(table, lang_left, lang_right, dated(_HEARD_LABEL, meta.hearing),
+            align=center, before=6)
+    _bi_row(table, lang_left, lang_right, dated(_DATE_LABEL, meta.date), align=center)
+    _bi_row(table, lang_left, lang_right, meta.appeal, italic=True, align=center)
+    _bi_row(table, lang_left, lang_right, meta.catchwords,
+            italic=True, align=WD_ALIGN_PARAGRAPH.JUSTIFY, before=10)
+    _bi_row(table, lang_left, lang_right, meta.held,
+            align=WD_ALIGN_PARAGRAPH.JUSTIFY, before=8)
+
+    # Table des matières = les motifs (rôle + auteur + plage), même si unanime.
+    def reasons(lang):
+        items = []
+        for sec in sections:
+            nums = [p.number for p in sec.pairs]
+            rng = f"[{nums[0]}]-[{nums[-1]}]" if nums else ""
+            items.append((_section_label(sec, lang, unanimous), rng, 0))
+        return items
+
+    _add_contents_toc(table, lang_left, lang_right, reasons)
 
 
 # --------------------------------------------------------------------------- #
@@ -425,12 +559,16 @@ def _add_heading_row(table, pair, lang_left: str) -> None:
 def _add_opinion_table(
     doc: Document, section: AlignedSection, lang_left: str, unanimous: bool
 ) -> None:
-    table = doc.add_table(rows=0, cols=2)
-    table.autofit = False
-    table.allow_autofit = False
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    _set_table_borders_white(table)
+    lang_right = "en" if lang_left == "fr" else "fr"
+    table = _new_aligned_table(doc)
     _add_banner_row(table, section, lang_left, unanimous)
+
+    # Table des matières propre à l'opinion — uniquement s'il y a des sous-titres.
+    if _section_toc(section, lang_left) or _section_toc(section, lang_right):
+        _add_contents_toc(
+            table, lang_left, lang_right, lambda lang: _section_toc(section, lang)
+        )
+
     for pair in section.pairs:
         _add_heading_row(table, pair, lang_left)
         row = table.add_row()
@@ -477,8 +615,8 @@ def render_docx(
     # Marqueur précoce pour la 1re opinion : garantit que STYLEREF se résout dès
     # la page 1 (sinon « Error! No text of specified style »).
     _add_ref_markers(doc, sections[0])
-    _add_title_block(doc, metadata)
-    _add_toc(doc, sections, lang_left, unanimous)
+    _add_front_matter(doc, metadata, sections, lang_left)
+    doc.add_page_break()
 
     for section in sections:
         _add_ref_markers(doc, section)
