@@ -31,7 +31,7 @@ from typing import Dict, List, Optional
 
 import pdfplumber
 
-from models import Decision, Paragraph, Section, SectionType
+from models import Decision, Paragraph, Section, SectionType, TextRun
 
 # Seuils de séparation des colonnes (coordonnée x0, en points).
 _HEADER_COL_SPLIT = 310   # en-tête p.1 : colonne de droite (dates/dossier) ~325
@@ -210,80 +210,192 @@ def _parse_opinions(pages) -> List[_Opinion]:
 # --------------------------------------------------------------------------- #
 # 3. Paragraphes
 # --------------------------------------------------------------------------- #
-def _strip_tail(text: str) -> str:
-    """Retire du dernier paragraphe le dispositif et la liste des procureurs."""
+# Type de la sortie de _extract_paragraphs : n -> (runs, sous-titres).
+_ParaData = "tuple[List[TextRun], List[str]]"
+
+
+def _word_style(word: dict) -> tuple[bool, bool]:
+    """(italique, gras) d'après le nom de police (ex. TimesNewRomanPS-ItalicMT)."""
+    f = (word.get("fontname") or "").lower()
+    return ("italic" in f or "oblique" in f), ("bold" in f)
+
+
+def _line_runs(words: List[dict]) -> List[TextRun]:
+    """Fragments stylés d'une ligne ; chaque mot porte une espace finale."""
+    runs: List[TextRun] = []
+    for w in words:
+        italic, bold = _word_style(w)
+        token = w["text"] + " "
+        if runs and runs[-1].italic == italic and runs[-1].bold == bold:
+            runs[-1].text += token
+        else:
+            runs.append(TextRun(token, italic, bold))
+    return runs
+
+
+def _normalize_runs(runs: List[TextRun]) -> List[TextRun]:
+    """Espaces simples, fusion des fragments voisins de même style, bords nettoyés."""
+    out: List[TextRun] = []
+    for r in runs:
+        t = re.sub(r"\s+", " ", r.text)
+        if not t:
+            continue
+        if out and out[-1].italic == r.italic and out[-1].bold == r.bold:
+            out[-1].text += t
+        else:
+            out.append(TextRun(t, r.italic, r.bold))
+    if out:
+        out[0].text = out[0].text.lstrip()
+        out[-1].text = out[-1].text.rstrip()
+    return [r for r in out if r.text]
+
+
+def _runs_text(runs: List[TextRun]) -> str:
+    return "".join(r.text for r in runs)
+
+
+def _tail_cut_index(text: str) -> int:
+    """Position où couper le dernier paragraphe (dispositif + procureurs)."""
     counsel = _COUNSEL.search(text)
     region = text[: counsel.start()] if counsel else text
     disp = _DISPOSITION.search(region)
     if disp:
-        return text[: disp.start()].strip()
+        return disp.start()
     if counsel:
-        return region.strip()
-    return text.strip()
+        return counsel.start()
+    return len(text)
 
 
-def _extract_paragraphs(pages) -> Dict[int, tuple[str, List[str]]]:
-    """Extrait, par numéro, le texte du paragraphe et ses sous-titres.
+def _strip_tail_runs(runs: List[TextRun]) -> List[TextRun]:
+    """Tronque les runs au dispositif/liste des procureurs (dernier paragraphe)."""
+    cut = _tail_cut_index(_runs_text(runs))
+    out: List[TextRun] = []
+    total = 0
+    for r in runs:
+        if total + len(r.text) <= cut:
+            out.append(r)
+            total += len(r.text)
+        else:
+            keep = cut - total
+            if keep > 0:
+                out.append(TextRun(r.text[:keep], r.italic, r.bold))
+            break
+    if out:
+        out[-1].text = out[-1].text.rstrip()
+    return out
 
-    Travail **ligne à ligne** (et non sur le texte aplati) pour pouvoir isoler
-    les sous-titres, qui n'ont aucune marque typographique distinctive. Un
-    sous-titre candidat (patron de plan) n'est validé que s'il précède
-    immédiatement un marqueur « [N] » : sinon il est réabsorbé dans la prose
-    (écarte « N. Metallic, … » et autres initiales d'auteurs dans les citations).
+
+def _extract_paragraphs(pages) -> Dict[int, "_ParaData"]:
+    """Extrait, par numéro, les fragments stylés du paragraphe et ses sous-titres.
+
+    Travail **ligne à ligne** sur les mots (avec leur police) — et non sur le
+    texte aplati — pour (a) isoler les sous-titres et (b) conserver les
+    italiques/gras. Un sous-titre candidat (patron de plan) n'est validé que
+    s'il précède immédiatement un marqueur « [N] » ; sinon il est réabsorbé dans
+    la prose (écarte « N. Metallic, … » et autres initiales d'auteurs).
     """
-    lines: List[str] = []
+    body_lines: List[tuple[str, List[dict]]] = []  # (texte de ligne, mots)
     for p in pages:
-        lines.extend((p.extract_text() or "").split("\n"))
+        for row in _lines(p.extract_words(extra_attrs=["fontname"])):
+            body_lines.append((row["text"], row["words"]))
 
-    # n -> (lignes de texte, sous-titres). order garde l'ordre d'apparition.
-    paras: Dict[int, tuple[List[str], List[str]]] = {}
+    paras: Dict[int, dict] = {}  # n -> {"runs": [...], "headings": [...]}
     order: List[int] = []
     expected = 1
     current: Optional[int] = None
-    buffer: List[str] = []  # sous-titres candidats, validés au prochain [N]
+    buffer: List[tuple[str, List[dict]]] = []  # sous-titres candidats
 
-    for line in lines:
-        m = _LINE_MARKER.match(line)
+    for text, words in body_lines:
+        m = _LINE_MARKER.match(text)
         if m and int(m.group(1)) == expected:
             n = expected
-            paras[n] = ([line[m.end():]], buffer)  # buffer = ses sous-titres
+            body_words = words
+            if body_words and re.fullmatch(r"\[\d+\]", body_words[0]["text"]):
+                body_words = body_words[1:]  # retire le marqueur « [N] »
+            paras[n] = {
+                "runs": _line_runs(body_words),
+                "headings": [t.strip() for t, _w in buffer],
+            }
             order.append(n)
             buffer = []
             current = n
             expected += 1
             continue
-        if _HEADING.match(line):
-            buffer.append(line.strip())
+        if _HEADING.match(text):
+            buffer.append((text, words))
             continue
         # Prose : des titres candidats en attente étaient en fait de la prose.
-        if buffer:
-            if current is not None:
-                paras[current][0].extend(buffer)
-            buffer = []
+        if buffer and current is not None:
+            for _t, w in buffer:
+                paras[current]["runs"].extend(_line_runs(w))
+        buffer = []
         if current is not None:
-            paras[current][0].append(line)
+            paras[current]["runs"].extend(_line_runs(words))
 
     if buffer and current is not None:  # candidats résiduels en toute fin
-        paras[current][0].extend(buffer)
+        for _t, w in buffer:
+            paras[current]["runs"].extend(_line_runs(w))
 
-    result: Dict[int, tuple[str, List[str]]] = {}
+    result: Dict[int, "_ParaData"] = {}
     for i, n in enumerate(order):
-        text_lines, headings = paras[n]
-        text = re.sub(r"\s+", " ", " ".join(text_lines)).strip()
+        runs = _normalize_runs(paras[n]["runs"])
         if i + 1 == len(order):  # dernier paragraphe → nettoyer la queue
-            text = _strip_tail(text)
-        result[n] = (text, headings)
+            runs = _strip_tail_runs(runs)
+        result[n] = (runs, paras[n]["headings"])
     return result
 
 
-def _make_paragraph(number: int, data: tuple[str, List[str]]) -> Paragraph:
-    text, headings = data
+# Ligne d'attribution d'opinion (« THE COURT — », « LA JUGE MOREAU — »).
+_AUTHOR_DASH = "—"
+_LEAD_IN_LOOKBACK = 80  # lignes max à remonter pour trouver l'attribution
+
+
+def _extract_lead_ins(pages, opinions: List[_Opinion]) -> Dict[int, str]:
+    """Mention d'attribution verbatim avant la 1re ¶ de chaque opinion.
+
+    Ancrée sur la ligne d'auteur en fin de « — » (« THE COURT — ») ; le
+    préambule = les lignes au-dessus jusqu'à la dernière ligne finissant par
+    « . » (fin de la liste des avocats). Reproduite « préambule\\nauteur ».
+    """
+    lines = "\n".join((p.extract_text() or "") for p in pages).split("\n")
+    result: Dict[int, str] = {}
+    for op in opinions:
+        idx = next(
+            (i for i, l in enumerate(lines) if re.match(rf"^\s*\[{op.start}\]\s", l)),
+            None,
+        )
+        if idx is None:
+            result[op.start] = ""
+            continue
+        j = idx - 1
+        while j >= 0 and idx - j <= _LEAD_IN_LOOKBACK and not lines[j].rstrip().endswith(
+            _AUTHOR_DASH
+        ):
+            j -= 1
+        if j < 0 or idx - j > _LEAD_IN_LOOKBACK:
+            result[op.start] = ""
+            continue
+        author_line = lines[j].strip()
+        preamble: List[str] = []
+        k = j - 1
+        while k >= 0 and lines[k].strip() and not lines[k].rstrip().endswith("."):
+            preamble.insert(0, lines[k].strip())
+            k -= 1
+        pre = re.sub(r"\s+", " ", " ".join(preamble)).strip()
+        result[op.start] = f"{pre}\n{author_line}" if pre else author_line
+    return result
+
+
+def _make_paragraph(number: int, data: "_ParaData") -> Paragraph:
+    runs, headings = data
+    text = _runs_text(runs).strip()
     return Paragraph(
         number=number,
         text=text,
         contains_quote=any(q in text for q in _QUOTE_CHARS),
         contains_citation=bool(_CITATION_HINT.search(text)),
         headings=headings,
+        runs=runs,
     )
 
 
@@ -291,7 +403,9 @@ def _make_paragraph(number: int, data: tuple[str, List[str]]) -> Paragraph:
 # Assemblage
 # --------------------------------------------------------------------------- #
 def _build_sections(
-    opinions: List[_Opinion], paras: Dict[int, tuple[str, List[str]]]
+    opinions: List[_Opinion],
+    paras: Dict[int, "_ParaData"],
+    lead_ins: Dict[int, str],
 ) -> List[Section]:
     if not opinions:
         # Repli : une seule section majoritaire regroupant tous les paragraphes.
@@ -305,7 +419,14 @@ def _build_sections(
             for n in range(op.start, op.end + 1)
             if n in paras
         ]
-        sections.append(Section(type=op.type, author=op.author, paragraphs=sec_paras))
+        sections.append(
+            Section(
+                type=op.type,
+                author=op.author,
+                paragraphs=sec_paras,
+                lead_in=lead_ins.get(op.start, ""),
+            )
+        )
     return sections
 
 
@@ -323,9 +444,10 @@ def parse_pdf(pdf_bytes: bytes) -> Decision:
         title, citation = _parse_header(pages[0])
         opinions = _parse_opinions(pages)
         paras = _extract_paragraphs(pages)
+        lead_ins = _extract_lead_ins(pages, opinions)
 
     return Decision(
         title=title,
         neutral_citation=citation,
-        sections=_build_sections(opinions, paras),
+        sections=_build_sections(opinions, paras, lead_ins),
     )

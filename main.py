@@ -32,8 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--lang-order",
         choices=["fr", "en"],
-        default="fr",
-        help="Langue affichée à gauche (défaut: fr).",
+        default="en",
+        help="Langue affichée à gauche (défaut: en).",
     )
     p.add_argument(
         "--output",

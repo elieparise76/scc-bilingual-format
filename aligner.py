@@ -57,6 +57,8 @@ def align(decision_fr: Decision, decision_en: Decision) -> List[AlignedSection]:
                     type=section_type,
                     author_fr=author_fr,
                     author_en=author_en,
+                    lead_in_fr=fs.lead_in if fs else "",
+                    lead_in_en=es.lead_in if es else "",
                     pairs=[],
                 )
             )
