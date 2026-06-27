@@ -19,3 +19,6 @@ env/
 # Documents Word générés (sortie du pipeline) et fichiers temporaires Office
 *.docx
 ~$*
+
+# Claude.md, version locale avec préférences
+CLAUDE.local.md
