@@ -34,7 +34,7 @@ To regenerate the bilingual document preview displayed on GitHub:
 python generate_preview.py
 ```
 
-This generates a sample document from item 20264, extracts the first 10 pages as PNG images, and places them in `preview/pages/`. The images are committed to git so they display in README.md; intermediate PDFs/DOCXs are gitignored.
+This generates a sample document from item 20264, extracts the first 4 pages as PNG images (75 DPI for compact file size), and places them in `preview/pages/`. The images are committed to git so they display in README.md; intermediate PDFs/DOCXs are gitignored.
 
 ## Architecture
 
