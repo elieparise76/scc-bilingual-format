@@ -25,11 +25,16 @@ document ready to proofread or print.
 - 🔗 **Clickable CanLII links** on every neutral citation (`YYYY SCC N` / `YYYY CSC N`)
   in the body — the URL is built **deterministically from the citation**, with no network
   call (CanLII's citation rule), and surrounding italics/bold are preserved
-- ⚖️ **Clickable Justice Canada links** on revised-statute citations (`R.S.C. 1985, c. C-50` /
-  `L.R.C. 1985, c. C-50`) in the body, pointing to the **official** laws-lois.justice.gc.ca
-  site — the cited chapter is the URL slug, built deterministically with no network call.
-  Limited to R.S.C./L.R.C. 1985 (annual statutes and supplements have no deterministic
-  per-chapter slug, so they are left unlinked — no dead links)
+- ⚖️ **Clickable Justice Canada links** on statute citations in the body, pointing to the
+  **official** laws-lois.justice.gc.ca site — URLs built deterministically with no network
+  call, covering two statute families:
+  - **Revised statutes** (`R.S.C. 1985, c. C-50` / `L.R.C. 1985, c. C-50`): the cited
+    chapter is the URL slug. (Supplements `c. 1 (5th Supp.)` have no deterministic
+    per-chapter slug, so they are left unlinked — no dead links.)
+  - **Annual statutes** (`S.C. 2010, c. 5` / `L.C. 2010, c. 5`): the slug is
+    `{year}_{chapter}` (S.C. → `AnnualStatutes`, L.C. → `LoisAnnuelles`). Limited to
+    years **≥ 2001**, where Justice Canada's coverage begins (earlier years 404, so they
+    are left unlinked — no dead links).
 - 📄 **Polished Word document**: bilingual cover page (case name, citation, dates,
   appeal mention, italic keywords, *Held / Arrêt* disposition, and a table of contents
   of the opinions); a per-opinion table of contents; a two-column body; a running

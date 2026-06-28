@@ -1,6 +1,6 @@
 """Liens hypertexte du corps : références neutres → CanLII, lois → Justice Canada.
 
-Détecte dans le corps du document deux familles de citations et transforme chaque
+Détecte dans le corps du document trois familles de citations et transforme chaque
 occurrence en hyperlien cliquable :
 
 1. **Références neutres** « AAAA SCC N » (anglais) / « AAAA CSC N » (français)
@@ -34,6 +34,20 @@ occurrence en hyperlien cliquable :
    LETTRE(S)-CHIFFRE » du regex exclut automatiquement ces cas (numéros nus). →
    aucun lien mort. (Extension future possible : liens d'article pinpoint
    « /section-N.html » ; non implémenté, on ne lie que le niveau loi.)
+
+3. **Lois fédérales ANNUELLES** « S.C. 2010, c. 5 » (anglais) / « L.C. 2010,
+   c. 5 » (français) → **Justice Canada** (laws-lois.justice.gc.ca). URL
+   **déterministe** : le slug est « {année}_{chapitre} » (S.C. → AnnualStatutes,
+   L.C. → LoisAnnuelles) :
+
+     « S.C. 2010, c. 5 » → .../eng/AnnualStatutes/2010_5/page-1.html
+     « L.C. 2010, c. 5 » → .../fra/LoisAnnuelles/2010_5/page-1.html
+
+   Comme pour les lois révisées, l'URL est **vérifiable par requête HTTP**.
+   **Limité aux années ≥ 2001** : le site ne couvre pas les lois antérieures
+   (vérifié : 2000 → 404) → les citations d'année < 2001 ne sont pas liées (zéro
+   lien mort). Disjoint des lois révisées (codées « 1985 », année « 20xx » ici) ;
+   le lookbehind du regex évite de capter le « S.C. » de « R.S.C. ».
 
 Point d'injection : `renderer._emit_runs`, seul endroit qui écrit les runs du
 corps (prose ET blocs en retrait, donc les citations à l'intérieur d'une citation
@@ -75,6 +89,24 @@ _STATUTE_LINK = re.compile(
     r"\b(R\.?S\.?C\.?|L\.?R\.?C\.?)\s+1985,?\s+c\.?\s*([A-Z]{1,2}-\d+(?:\.\d+)?)\b"
 )
 
+# Patron d'URL Justice Canada pour les lois ANNUELLES fédérales (S.C./L.C.).
+# S.C. (anglais) → AnnualStatutes, L.C. (français) → LoisAnnuelles ; le slug est
+# « {année}_{chapitre} ». Couverture du site à partir de 2001 (vérifié : 2000 →
+# 404), d'où la borne `_ANNUAL_MIN_YEAR`.
+_ANNUAL = {
+    "SC": "https://laws-lois.justice.gc.ca/eng/AnnualStatutes/{y}_{n}/page-1.html",
+    "LC": "https://laws-lois.justice.gc.ca/fra/LoisAnnuelles/{y}_{n}/page-1.html",
+}
+# Loi annuelle : groupes (marqueur, année, chapitre). Le lookbehind `(?<![.\w])`
+# évite de capter le « S.C. » DANS « R.S.C. » (un point précède) ou « L.C. » dans
+# « L.R.C. » (une lettre précède le L final → la séquence est L-R-C, pas L-C).
+# L'année doit être « 20xx » → familles disjointes des lois révisées (codées
+# « 1985 ») ; le chapitre est un entier nu (« c. 5 »), pas un slug lettre-chiffre.
+_ANNUAL_LINK = re.compile(r"(?<![.\w])(S\.?C\.?|L\.?C\.?)\s+(20\d{2}),?\s+c\.?\s*(\d+)\b")
+# Justice Canada ne couvre les lois annuelles qu'à partir de 2001 (avant → 404) ;
+# on ne lie donc pas les années antérieures, pour éviter tout lien mort.
+_ANNUAL_MIN_YEAR = 2001
+
 # --- Style du lien (constantes uniques, faciles à changer) ------------------- #
 # Défaut : bleu hyperlien Word + souligné, la convention reconnaissable
 # « cliquable ». Pour un rendu sobre (noir, sans soulignement) :
@@ -100,12 +132,27 @@ def justice_url(marker: str, chapter: str) -> str:
     return _JUSTICE[key].format(ch=chapter)
 
 
+def annual_url(marker: str, year: str, num: str) -> str | None:
+    """URL Justice Canada d'une loi annuelle S.C./L.C., ou None si l'année est
+    antérieure à 2001 (non couverte par le site → on ne lie pas, pour éviter un
+    lien mort).
+
+    Le marqueur (« S.C. »/« L.C. », points facultatifs) donne la langue ;
+    le slug est « {année}_{chapitre} ».
+    """
+    if int(year) < _ANNUAL_MIN_YEAR:
+        return None
+    key = "SC" if marker.upper().replace(".", "").startswith("S") else "LC"
+    return _ANNUAL[key].format(y=year, n=num)
+
+
 def _link_spans(text):
     """(début, fin, url) de tous les liens du texte, triés, sans chevauchement.
 
-    Collecte les deux familles (références neutres → CanLII, lois → Justice
-    Canada), trie par position et écarte tout chevauchement (garde le premier).
-    Un même run peut contenir les deux types.
+    Collecte les trois familles (références neutres → CanLII, lois révisées 1985
+    → Justice Canada, lois annuelles S.C./L.C. ≥ 2001 → Justice Canada), trie par
+    position et écarte tout chevauchement (garde le premier). Un même run peut
+    contenir plusieurs types.
     """
     spans = []
     for m in _CITE_LINK.finditer(text):
@@ -114,6 +161,11 @@ def _link_spans(text):
     for m in _STATUTE_LINK.finditer(text):
         marker, chapter = m.groups()
         spans.append((m.start(), m.end(), justice_url(marker, chapter)))
+    for m in _ANNUAL_LINK.finditer(text):
+        marker, year, num = m.groups()
+        url = annual_url(marker, year, num)
+        if url:  # None si année < 2001 (non couverte) → pas de lien
+            spans.append((m.start(), m.end(), url))
     spans.sort()
     out, last = [], -1
     for s, e, url in spans:

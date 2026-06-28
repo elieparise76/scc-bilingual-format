@@ -28,11 +28,16 @@ produit un document prêt à relire ou à imprimer.
   du corps — l'URL est construite **de façon déterministe à partir de la citation**,
   sans aucun appel réseau (règle de citation CanLII), et les italiques et le gras
   environnants sont préservés
-- ⚖️ **Liens Justice Canada cliquables** sur les citations de lois révisées (`R.S.C. 1985, c. C-50`
-  / `L.R.C. 1985, c. C-50`) du corps, vers le site **officiel** laws-lois.justice.gc.ca —
-  le chapitre cité est le slug d'URL, construit de façon déterministe sans appel réseau.
-  Limité aux L.R.C. 1985 (les lois annuelles et les suppléments n'ont pas de slug
-  déterministe par chapitre → laissés sans lien, aucun lien mort)
+- ⚖️ **Liens Justice Canada cliquables** sur les citations de lois du corps, vers le site
+  **officiel** laws-lois.justice.gc.ca — URLs construites de façon déterministe sans appel
+  réseau, pour deux familles de lois :
+  - **Lois révisées** (`R.S.C. 1985, c. C-50` / `L.R.C. 1985, c. C-50`) : le chapitre cité
+    est le slug d'URL. (Les suppléments `c. 1 (5e suppl.)` n'ont pas de slug déterministe
+    par chapitre → laissés sans lien, aucun lien mort.)
+  - **Lois annuelles** (`S.C. 2010, c. 5` / `L.C. 2010, c. 5`) : le slug est
+    `{année}_{chapitre}` (S.C. → `AnnualStatutes`, L.C. → `LoisAnnuelles`). Limité aux
+    années **≥ 2001**, début de la couverture de Justice Canada (les années antérieures
+    renvoient 404 → laissées sans lien, aucun lien mort).
 - 📄 **Document Word soigné** : page de garde bilingue (nom de cause, référence, dates,
   mention d'appel, mots-clés en italique, dispositif *Held / Arrêt*, et une table des
   matières des opinions) ; une table des matières par opinion ; corps en deux colonnes ;
