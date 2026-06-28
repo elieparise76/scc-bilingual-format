@@ -29,9 +29,9 @@ marges 0,4 po, bordures de tableau blanches, espace accru entre les colonnes.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import zip_longest
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
@@ -75,6 +75,8 @@ _COURT_AUTHORS = {"La Cour", "The Court"}
 _HEARD_LABEL = {"fr": "Appel entendu", "en": "Appeal heard"}
 _DATE_LABEL = {"fr": "Jugement rendu", "en": "Judgment rendered"}
 _TOC_LABEL = {"fr": "Table des matières", "en": "Table of Contents"}
+_DOCKET_LABEL = {"fr": "Dossier no", "en": "Case No."}
+_CORAM_LABEL = {"fr": "CORAM :", "en": "CORAM:"}
 # Taquet droit (avec points de conduite) pour la table des matières, dans une
 # cellule = largeur de texte de la cellule (_COL_W moins le gap intérieur).
 _TOC_TAB = Emu(_COL_W - _CELL_GAP)
@@ -98,6 +100,12 @@ class DocMetadata:
     catchwords_en: str = ""
     held_fr: str = ""
     held_en: str = ""
+    parties_fr: List[Tuple[str, str]] = field(default_factory=list)
+    parties_en: List[Tuple[str, str]] = field(default_factory=list)
+    coram_fr: List[str] = field(default_factory=list)
+    coram_en: List[str] = field(default_factory=list)
+    docket_fr: str = ""
+    docket_en: str = ""
     lang_order: str = "en"  # "en" → EN à gauche (défaut) ; "fr" → FR à gauche
 
     def title(self, lang: str) -> str:
@@ -120,6 +128,15 @@ class DocMetadata:
 
     def held(self, lang: str) -> str:
         return self.held_fr if lang == "fr" else self.held_en
+
+    def docket(self, lang: str) -> str:
+        return self.docket_fr if lang == "fr" else self.docket_en
+
+    def parties(self, lang: str) -> List[Tuple[str, str]]:
+        return self.parties_fr if lang == "fr" else self.parties_en
+
+    def coram(self, lang: str) -> List[str]:
+        return self.coram_fr if lang == "fr" else self.coram_en
 
 
 # --------------------------------------------------------------------------- #
@@ -335,12 +352,14 @@ def _setup_headers_footers(
     doc: Document, meta: DocMetadata, first: AlignedSection
 ) -> None:
     sec = doc.sections[0]
+    # Page 1 (garde) sans en-tête ; en-tête alterné à partir de la page 2.
+    sec.different_first_page_header_footer = True
     odd_header = sec.header
     even_header = sec.even_page_header
     odd_header.is_linked_to_previous = False
     even_header.is_linked_to_previous = False
-    # Pages impaires → anglais ; paires → français (page 1 = anglais). Le
-    # résultat en cache = le juge de la 1re opinion (exact en page 1).
+    # Pages impaires → anglais ; paires → français. Après la garde (page 1
+    # sans en-tête), page 2 est paire → français, page 3 impaire → anglais.
     _fill_header(
         odd_header.paragraphs[0], meta.title_en, meta.citation_en,
         "OpinionRefEN", _lead_author(first.author_en),
@@ -415,6 +434,30 @@ def _bi_row(
         _set_run(p.add_run(text), size, bold=bold, italic=italic)
 
 
+def _add_party_row(table, sides: List[tuple], *, before: int = 0) -> None:
+    """Ligne de partie bilingue : « **Rôle** — noms » (rôle en gras).
+
+    `sides` = [(rôle_gauche, noms_gauche), (rôle_droite, noms_droite)]. Si le
+    rôle est absent, n'affiche que les noms (sans tiret). Ligne omise si les
+    deux côtés sont vides."""
+    if all(not role and not names for role, names in sides):
+        return
+    row = table.add_row()
+    for i, (cell, (role, names)) in enumerate(zip((row.cells[0], row.cells[1]), sides)):
+        _set_cell_margins(cell, *_col_margins(i))
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        if before:
+            p.paragraph_format.space_before = Pt(before)
+        if role:
+            _set_run(p.add_run(role), 9, bold=True)
+            if names:
+                _set_run(p.add_run(f" — {names}"), 9)
+        elif names:
+            _set_run(p.add_run(names), 9)
+
+
 def _add_toc_row(table, left: tuple, right: tuple) -> None:
     """Ligne de TDM ; left/right = (libellé, texte_droite, niveau).
 
@@ -466,10 +509,29 @@ def _add_front_matter(
 
     _bi_row(table, lang_left, lang_right, meta.title, size=12, bold=True, align=center)
     _bi_row(table, lang_left, lang_right, meta.citation, size=11, bold=True, align=center)
+    _bi_row(table, lang_left, lang_right,
+            lambda lang: f"{_DOCKET_LABEL[lang]} {meta.docket(lang)}" if meta.docket(lang) else "",
+            align=center)
     _bi_row(table, lang_left, lang_right, dated(_HEARD_LABEL, meta.hearing),
             align=center, before=6)
     _bi_row(table, lang_left, lang_right, dated(_DATE_LABEL, meta.date), align=center)
-    _bi_row(table, lang_left, lang_right, meta.appeal, italic=True, align=center)
+    _bi_row(table, lang_left, lang_right, meta.appeal, italic=True, align=center, before=6)
+
+    # Parties : « **Rôle** — noms » (rôle en gras), alignées FR/EN par position.
+    parties_l = meta.parties(lang_left)
+    parties_r = meta.parties(lang_right)
+    for i, (pl, pr) in enumerate(zip_longest(parties_l, parties_r, fillvalue=("", ""))):
+        nom_l, role_l = pl
+        nom_r, role_r = pr
+        _add_party_row(table, [(role_l, nom_l), (role_r, nom_r)],
+                       before=(8 if i == 0 else 2))
+
+    # CORAM
+    _bi_row(table, lang_left, lang_right,
+            lambda lang: (f"{_CORAM_LABEL[lang]} {', '.join(meta.coram(lang))}"
+                          if meta.coram(lang) else ""),
+            before=6)
+
     _bi_row(table, lang_left, lang_right, meta.catchwords,
             italic=True, align=WD_ALIGN_PARAGRAPH.JUSTIFY, before=10)
     _bi_row(table, lang_left, lang_right, meta.held,

@@ -99,6 +99,12 @@ def main(argv: list[str] | None = None) -> int:
         catchwords_en=decision_en.catchwords,
         held_fr=decision_fr.held,
         held_en=decision_en.held,
+        parties_fr=decision_fr.parties,
+        parties_en=decision_en.parties,
+        coram_fr=decision_fr.coram,
+        coram_en=decision_en.coram,
+        docket_fr=decision_fr.docket,
+        docket_en=decision_en.docket,
         lang_order=args.lang_order,
     )
     written = render_docx(sections, metadata, output_path)

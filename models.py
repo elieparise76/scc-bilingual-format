@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 class SectionType(str, Enum):
@@ -93,6 +93,9 @@ class Decision:
     appeal_from: str = ""    # ex. "ON APPEAL FROM THE COURT OF APPEAL FOR QUEBEC"
     catchwords: str = ""     # mots-clés/tags du sommaire (bloc en italique)
     held: str = ""           # mention « Held (…): … » / « Arrêt (…) : … »
+    parties: List[Tuple[str, str]] = field(default_factory=list)  # (nom, rôle)
+    coram: List[str] = field(default_factory=list)   # texte brut du CORAM
+    docket: str = ""         # numéro de dossier, ex. « 40137 »
 
     @property
     def paragraphs(self) -> List[Paragraph]:

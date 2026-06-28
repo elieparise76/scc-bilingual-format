@@ -28,7 +28,7 @@ import io
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pdfplumber
 
@@ -68,6 +68,25 @@ _LABEL_KEYWORD = re.compile(
     re.IGNORECASE,
 )
 _BODY_LABELS = re.compile(r"^(BETWEEN|AND BETWEEN|ENTRE|ET ENTRE|- and -|- et -)\b")
+# Séparateurs dans la liste des parties (entre deux groupes de parties).
+# Le colon est optionnel : « AND BETWEEN: » ou « AND BETWEEN ».
+_PARTIES_SEP = re.compile(
+    r"^(?:between|and\s+between|entre|et\s+entre|et|and|-\s*and\s*-|-\s*et\s*-)\s*:?\s*$",
+    re.IGNORECASE,
+)
+# Mots de rôle des parties (1re occurrence dans un groupe). Singulier et pluriel.
+_ROLE_WORDS = re.compile(
+    r"^(?:Appellants?|Respondents?|Interveners?|Intervenors?|Applicants?|Petitioners?"
+    r"|Appelants?|Intim[ée]e?s?|Intervenant[e]?s?|Demandeurs?|Demanderesses?"
+    r"|Requ[eé]rant[e]?s?|Cross-Appellants?|Mis en cause|Mise en cause)"
+    r"(?:[/\s].*)?$",
+    re.IGNORECASE,
+)
+# Labels du numéro de dossier (colonne droite). « DOCKET: » en anglais,
+# « DOSSIER : » en français.
+_DOCKET_RE = re.compile(
+    r"(?:CASE\s+NUMBER|DOCKET|DOSSIER)\s*[:\s]\s*(\d+)", re.IGNORECASE
+)
 
 # --- Détection du retrait (« texte en retrait » : citations en bloc, listes) ---
 # La mise en page CSC place le corps au ras de la marge (x0 ≈ 90) et indente les
@@ -239,6 +258,69 @@ def _extract_appeal_and_catchwords(pages) -> tuple[str, str]:
     return appeal_from, catchwords
 
 
+def _extract_parties(page) -> List[Tuple[str, str]]:
+    """(nom, rôle) des parties depuis la zone BETWEEN/ENTRE → CORAM.
+
+    Stratégie : dans les PDF CSC, les lignes dates/dossier sont toujours au-dessus
+    de BETWEEN (y chronologique) ; après BETWEEN on peut donc utiliser le texte
+    complet de la ligne sans risque de mélange avec la colonne droite.
+
+    Regroupement par séparateurs (« and »/« et »/« and between »…) ; dans chaque
+    groupe, le **premier** mot-clé de rôle (_ROLE_WORDS) clôt le nom — tout ce
+    qui suit (ex. « TRADUCTION FRANÇAISE OFFICIELLE ») est ignoré."""
+    rows = _lines(page.extract_words())
+    raw: List[str] = []
+    in_parties = False
+    for r in rows:
+        if not in_parties:
+            if _BODY_LABELS.match(r["text"]):
+                in_parties = True
+            continue
+        if "CORAM" in r["text"]:
+            break
+        text = re.sub(r"\s+", " ", r["text"]).strip()
+        if text:
+            raw.append(text)
+
+    if not raw:
+        return []
+
+    # Regrouper par séparateurs ; chaque groupe = une partie.
+    groups: List[List[str]] = []
+    cur: List[str] = []
+    for text in raw:
+        if _PARTIES_SEP.match(text):
+            if cur:
+                groups.append(cur)
+            cur = []
+        else:
+            cur.append(text)
+    if cur:
+        groups.append(cur)
+
+    # Le 1er mot-clé de rôle clôt le nom ; le reste du groupe est ignoré.
+    parties: List[Tuple[str, str]] = []
+    for group in groups:
+        if not group:
+            continue
+        role_idx = next((i for i, t in enumerate(group) if _ROLE_WORDS.match(t)), -1)
+        if role_idx >= 0:
+            name = " ".join(group[:role_idx]).strip()
+            role = group[role_idx].strip()
+        else:
+            name = " ".join(group).strip()
+            role = ""
+        if name:
+            parties.append((name, role))
+    return parties
+
+
+def _extract_docket(right_text: str) -> str:
+    """Numéro de dossier depuis le texte de la colonne droite de la couverture."""
+    m = _DOCKET_RE.search(right_text)
+    return m.group(1) if m else ""
+
+
 # --------------------------------------------------------------------------- #
 # 2. Structure des opinions
 # --------------------------------------------------------------------------- #
@@ -267,19 +349,28 @@ def _find_coram_page(pages):
     return None
 
 
-def _parse_opinions(pages) -> List[_Opinion]:
+def _parse_opinions(pages) -> Tuple[List[_Opinion], List[str]]:
+    """Retourne (opinions, coram) : liste des opinions structurées et texte brut du CORAM.
+
+    Le CORAM est capturé depuis la ligne « CORAM: … » et ses éventuelles lignes
+    de continuation (avant le 1er label d'opinion)."""
     page = _find_coram_page(pages)
     if page is None:
-        return []
+        return [], []
 
     rows = _lines(page.extract_words())
     # Région du bloc : entre la ligne CORAM et la ligne NOTE/note de bas (*).
     block: List[dict] = []
     seen_coram = False
+    coram_raw: List[str] = []
     for r in rows:
         if not seen_coram:
             if "CORAM" in r["text"]:
                 seen_coram = True
+                # Texte des juges sur la ligne CORAM elle-même (après le label).
+                after = re.sub(r"^.*?CORAM\s*:", "", r["text"], flags=re.IGNORECASE).strip()
+                if after:
+                    coram_raw.append(after)
             continue
         if r["text"].startswith("NOTE") or r["text"].startswith("*"):
             break
@@ -292,7 +383,11 @@ def _parse_opinions(pages) -> List[_Opinion]:
         author = _col_text(r, _OPINION_COL_SPLIT, "right")
         if cur is None:
             if not _LABEL_KEYWORD.search(label):
-                continue  # débordement du CORAM (liste des juges)
+                # Débordement du CORAM : lignes de juges supplémentaires.
+                line = r["text"].strip()
+                if line:
+                    coram_raw.append(line)
+                continue
             cur = {"label": [label], "author": [author], "full": [r["text"]]}
         else:
             cur["label"].append(label)
@@ -310,7 +405,10 @@ def _parse_opinions(pages) -> List[_Opinion]:
                 )
             )
             cur = None
-    return opinions
+
+    coram_text = re.sub(r"\s+", " ", " ".join(coram_raw)).strip()
+    coram = [coram_text] if coram_text else []
+    return opinions, coram
 
 
 # --------------------------------------------------------------------------- #
@@ -866,7 +964,9 @@ def parse_pdf(pdf_bytes: bytes) -> Decision:
         decision_date = _find_cover_date(right, r"(?:JUDGMENT RENDERED|JUGEMENT RENDU)")
         appeal_from, catchwords = _extract_appeal_and_catchwords(pages)
         held = _extract_held(pages)
-        opinions = _parse_opinions(pages)
+        parties = _extract_parties(pages[0])
+        docket = _extract_docket(right)
+        opinions, coram = _parse_opinions(pages)
         paras = _extract_paragraphs(pages)
         lead_ins = _extract_lead_ins(pages, opinions)
 
@@ -879,4 +979,7 @@ def parse_pdf(pdf_bytes: bytes) -> Decision:
         appeal_from=appeal_from,
         catchwords=catchwords,
         held=held,
+        parties=parties,
+        coram=coram,
+        docket=docket,
     )
