@@ -35,6 +35,22 @@ class TextRun:
 
 
 @dataclass
+class TextBlock:
+    """Un bloc de texte d'un paragraphe, avec son niveau de retrait.
+
+    `indent` = 0 pour la prose courante (corps), >= 1 pour le texte « en
+    retrait » dans le PDF (citation en bloc, extrait législatif, liste
+    énumérée). Le Renderer rend chaque bloc indent>=1 indenté et en corps plus
+    petit, comme un paragraphe distinct. Un paragraphe « normal » a un seul bloc
+    à `indent=0` ; un paragraphe qui introduit une citation/liste en a plusieurs
+    (prose, puis bloc(s) en retrait, puis éventuellement la prose qui reprend).
+    """
+
+    runs: List[TextRun] = field(default_factory=list)
+    indent: int = 0
+
+
+@dataclass
 class Paragraph:
     number: int
     text: str  # texte brut (heuristiques, nettoyage de queue)
@@ -50,7 +66,10 @@ class Paragraph:
     # parser._candidate_block et aligner._reconcile_headings.
     heading_candidates: List[str] = field(default_factory=list)
     # Texte découpé en fragments stylés (italique/gras) pour le rendu fidèle.
+    # Concaténation à plat de tous les `blocks` (heuristiques, nettoyage de queue).
     runs: List[TextRun] = field(default_factory=list)
+    # Texte découpé en blocs selon le retrait (corps vs citation/liste indentée).
+    blocks: List["TextBlock"] = field(default_factory=list)
 
 
 @dataclass

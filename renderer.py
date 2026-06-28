@@ -41,7 +41,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Emu, Inches, Pt, RGBColor
 
-from models import AlignedSection, Paragraph, SectionType
+from models import AlignedSection, Paragraph, SectionType, TextBlock
 
 _FONT = "Times New Roman"
 _PAGE_W = Inches(8.5)
@@ -54,6 +54,12 @@ _CELL_TB = Inches(0.03)
 # Le nom de cause est tronqué pour tenir sur une ligne (sinon il déborde les
 # taquets et la citation ne peut pas atteindre la droite).
 _HEADER_TITLE_MAX = 56
+
+# Texte « en retrait » (citations en bloc, listes) : corps légèrement plus petit
+# que le corps courant (11 pt) et retrait gauche croissant selon le niveau.
+_INDENT_FONT = Pt(10)
+_INDENT_BASE = Inches(0.05)   # retrait du 1er niveau (au-delà du bord de cellule)
+_INDENT_STEP = Inches(0.25)   # retrait additionnel par niveau
 
 # Libellés de rôle de section (fr, en) pour bandeaux et table des matières.
 _ROLE_LABELS = {
@@ -518,6 +524,27 @@ def _add_banner_row(
         p.add_run(text).bold = True  # « \n » → saut de ligne (préambule / auteur)
 
 
+def _emit_runs(para, runs, size=None) -> None:
+    """Écrit les fragments stylés (italique/gras) dans un paragraphe ; `size`
+    force le corps (texte en retrait, plus petit)."""
+    for r in runs:
+        run = para.add_run(r.text)
+        run.italic, run.bold = r.italic, r.bold
+        if size is not None:
+            run.font.size = size
+
+
+def _style_indent(para, indent: int) -> None:
+    """Met en forme un paragraphe en retrait (citation/liste) : retrait gauche
+    selon le niveau, léger espacement vertical. Justifié comme le corps."""
+    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    if indent >= 1:
+        pf = para.paragraph_format
+        pf.left_indent = Emu(_INDENT_BASE + _INDENT_STEP * indent)
+        pf.space_before = Pt(4)
+        pf.space_after = Pt(2)
+
+
 def _write_cell(cell, paragraph: Optional[Paragraph], number: int, col: int) -> None:
     cell.width = _COL_W
     _set_cell_margins(cell, *_col_margins(col))
@@ -528,14 +555,21 @@ def _write_cell(cell, paragraph: Optional[Paragraph], number: int, col: int) -> 
         run = p.add_run("—")
         run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
         return
-    p.add_run(f"[{number}] ").bold = True
-    if paragraph.runs:  # fragments stylés (italique/gras conservés)
-        for r in paragraph.runs:
-            run = p.add_run(r.text)
-            run.italic = r.italic
-            run.bold = r.bold
-    else:
-        p.add_run(paragraph.text)
+
+    # Blocs = prose + retraits (citations/listes). Repli : un bloc plat (corps).
+    blocks = paragraph.blocks or [TextBlock(runs=paragraph.runs, indent=0)]
+    for i, block in enumerate(blocks):
+        para = p if i == 0 else cell.add_paragraph()
+        _style_indent(para, block.indent)
+        if i == 0:
+            para.add_run(f"[{number}] ").bold = True  # marqueur sur le 1er bloc
+        size = _INDENT_FONT if block.indent >= 1 else None
+        if block.runs:
+            _emit_runs(para, block.runs, size)
+        else:
+            run = para.add_run(paragraph.text)
+            if size is not None:
+                run.font.size = size
 
 
 def _add_heading_row(table, pair, lang_left: str) -> None:

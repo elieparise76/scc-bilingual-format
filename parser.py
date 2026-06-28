@@ -26,12 +26,13 @@ from __future__ import annotations
 
 import io
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import pdfplumber
 
-from models import Decision, Paragraph, Section, SectionType, TextRun
+from models import Decision, Paragraph, Section, SectionType, TextBlock, TextRun
 
 # Seuils de séparation des colonnes (coordonnée x0, en points).
 _HEADER_COL_SPLIT = 310   # en-tête p.1 : colonne de droite (dates/dossier) ~325
@@ -67,6 +68,39 @@ _LABEL_KEYWORD = re.compile(
     re.IGNORECASE,
 )
 _BODY_LABELS = re.compile(r"^(BETWEEN|AND BETWEEN|ENTRE|ET ENTRE|- and -|- et -)\b")
+
+# --- Détection du retrait (« texte en retrait » : citations en bloc, listes) ---
+# La mise en page CSC place le corps au ras de la marge (x0 ≈ 90) et indente les
+# citations en bloc / extraits législatifs à ~148 (offset +58) et les listes
+# imbriquées à ~162 (+72). On classe chaque ligne en niveau de retrait via
+# l'écart à la marge de base (calculée par document, voir _extract_paragraphs).
+_INDENT_L2 = 64  # offset (pts) au-delà duquel : niveau 2 (~162, liste imbriquée)
+_INDENT_L1 = 34  # offset au-delà duquel : niveau 1 (~148, citation en bloc)
+_INDENT_LIST = 16  # offset minimal pour qu'une **ligne à puce** compte comme L1
+# Surcroît d'interligne (pts) — par rapport à l'interligne propre du bloc — au-delà
+# duquel on ouvre un nouvel alinéa dans un retrait. Relatif (et non absolu) car
+# l'interligne varie : ~2 pt dans une citation (un alinéa saute à ~14), ~16 pt
+# dans une liste du corps à interligne double (aucun saut anormal entre lignes).
+_GAP_PARA = 7.0
+# Puce / numéro de liste en début de ligne (extrait législatif ou énumération) :
+# « (4) », « (a) », « (iv) », « a) », « i) », « 1. », « 570 (1) », « 320.24(4) ».
+# Sert à ouvrir un bloc à chaque item ; volontairement étroit (pas de simple
+# nombre « 27 octobre » qui débuterait une ligne de continuation d'une source).
+_LIST_ITEM = re.compile(
+    r"^\s*(?:"
+    r"\(\d{1,3}\)"            # (4) (12)
+    r"|\([a-z]{1,2}\)"        # (a) (bb)
+    r"|\([ivxlcdm]+\)"        # (iv)
+    r"|[a-z]\)"               # a) b)   (style français : parenthèse seule)
+    r"|[ivxlcdm]+\)"          # i) ii)
+    r"|\d{1,3}\."             # 1. 2.   (énumération, ex. l'image)
+    r"|\d[\d.]*\s*\(\d{1,3}\)"  # 570 (1), 320.24(4)
+    r")\s"
+)
+# Une puce n'ouvre un bloc que si la ligne précédente **termine** un item
+# (« ; », « . », « : »…) : distingue un vrai item « b) … » (précédé de « … ; »)
+# d'un fragment « (3) ou 320.15(2) » qui poursuit « … 320.14(2) ou ».
+_LIST_PREV_END = re.compile(r"[.;:!?»”’)\]]\s*$|—\s*$")
 
 # Détection citations/guillemets (heuristique, pour formatage distinct).
 _QUOTE_CHARS = ("«", "»", "“", "”", "[TRANSLATION]", "[TRADUCTION]")
@@ -282,8 +316,8 @@ def _parse_opinions(pages) -> List[_Opinion]:
 # --------------------------------------------------------------------------- #
 # 3. Paragraphes
 # --------------------------------------------------------------------------- #
-# Type de la sortie de _extract_paragraphs : n -> (runs, sous-titres).
-_ParaData = "tuple[List[TextRun], List[str], List[str]]"  # runs, titres, candidats
+# Type de la sortie de _extract_paragraphs : n -> (blocs, titres, candidats).
+_ParaData = "tuple[List[TextBlock], List[str], List[str]]"
 
 
 def _word_style(word: dict) -> tuple[bool, bool]:
@@ -336,25 +370,6 @@ def _tail_cut_index(text: str) -> int:
     if counsel:
         return counsel.start()
     return len(text)
-
-
-def _strip_tail_runs(runs: List[TextRun]) -> List[TextRun]:
-    """Tronque les runs au dispositif/liste des procureurs (dernier paragraphe)."""
-    cut = _tail_cut_index(_runs_text(runs))
-    out: List[TextRun] = []
-    total = 0
-    for r in runs:
-        if total + len(r.text) <= cut:
-            out.append(r)
-            total += len(r.text)
-        else:
-            keep = cut - total
-            if keep > 0:
-                out.append(TextRun(r.text[:keep], r.italic, r.bold))
-            break
-    if out:
-        out[-1].text = out[-1].text.rstrip()
-    return out
 
 
 # Fin de phrase, deux formes :
@@ -480,15 +495,142 @@ def _split_into_headings(block: List[tuple]) -> List[str]:
     return [h for h in headings if "))" not in h and not _CITATION_YEAR.search(h)]
 
 
-def _lines_to_runs(lines: List[tuple]) -> List[TextRun]:
-    """Construit les runs d'un paragraphe ; retire le marqueur « [N] » initial."""
-    runs: List[TextRun] = []
-    for idx, (_text, words) in enumerate(lines):
-        ws = words
-        if idx == 0 and ws and _BARE_MARK.fullmatch(ws[0]["text"]):
-            ws = ws[1:]
-        runs.extend(_line_runs(ws))
-    return _normalize_runs(runs)
+def _indent_level(x0: float, baseline: float, is_list: bool) -> int:
+    """Niveau de retrait d'une ligne d'après l'écart de son x0 à la marge.
+
+    `is_list` (la ligne débute par une puce/numéro) abaisse le seuil : une
+    énumération faiblement indentée compte quand même comme « en retrait »."""
+    off = x0 - baseline
+    if off >= _INDENT_L2:
+        return 2
+    if off >= _INDENT_L1:
+        return 1
+    if off >= _INDENT_LIST and is_list:
+        return 1
+    return 0
+
+
+def _group_indent_blocks(lines: List[tuple], baseline: float) -> List[dict]:
+    """Regroupe les lignes d'un paragraphe en blocs par niveau de retrait.
+
+    Le **niveau de rendu** d'un bloc = niveau du x0 *minimal* de ses lignes :
+    une ligne plus indentée (1er retrait d'un nouvel alinéa de citation, à ~162)
+    est ainsi absorbée par le bloc dont le corps revient à ~148.
+
+    Un nouveau bloc s'ouvre quand : (a) on franchit la frontière corps/retrait ;
+    (b) un **saut vertical** marque un changement d'alinéa ; (c) une ligne en
+    retrait débute par une **puce/numéro** (nouvel item de liste ou de citation)."""
+    groups: List[dict] = []
+    cur: Optional[dict] = None
+    prev_bottom: Optional[float] = None
+    prev_text = ""
+    for text, words in lines:
+        if not words:
+            continue
+        x0, top, bottom = words[0]["x0"], words[0]["top"], words[0]["bottom"]
+        gap = (top - prev_bottom) if prev_bottom is not None else None
+        is_list = bool(_LIST_ITEM.match(text))
+        lvl = _indent_level(x0, baseline, is_list)
+        if cur is None:
+            boundary = True
+        elif (cur["level"] >= 1) != (lvl >= 1):
+            boundary = True  # (a) corps <-> retrait
+        elif (
+            lvl >= 1
+            and cur["base_gap"] is not None
+            and gap is not None
+            and gap > cur["base_gap"] + _GAP_PARA
+        ):
+            # (b) nouvel alinéa *dans* un retrait : un saut nettement plus grand
+            # que l'interligne propre du bloc. Comparaison **relative** (et non
+            # absolue) car l'interligne varie : citations à interligne simple
+            # (~2 pt, un alinéa saute à ~14), listes du corps à interligne double
+            # (~16 pt partout — aucun saut anormal, donc aucune coupe parasite).
+            boundary = True
+        elif is_list and lvl >= 1 and _LIST_PREV_END.search(prev_text.rstrip()):
+            # (c) nouvel item de liste/citation : puce précédée d'une fin d'item
+            # (évite de couper un renvoi « (3) ou … » au fil d'une phrase).
+            boundary = True
+        else:
+            boundary = False
+
+        if boundary:
+            cur = {"lines": [words], "min_x0": x0, "level": lvl, "base_gap": None}
+            groups.append(cur)
+        else:
+            cur["lines"].append(words)
+            if cur["base_gap"] is None and gap is not None and gap >= 0:
+                cur["base_gap"] = gap  # 1er interligne intra-bloc = référence
+            if x0 < cur["min_x0"]:  # le corps du bloc fixe son niveau de rendu
+                cur["min_x0"] = x0
+                cur["level"] = _indent_level(x0, baseline, False)
+        prev_bottom = bottom
+        prev_text = text
+    return groups
+
+
+def _lines_to_blocks(lines: List[tuple], baseline: float) -> List[TextBlock]:
+    """Construit les blocs (prose + retraits) d'un paragraphe ; retire « [N] ».
+
+    Le marqueur « [N] » est **conservé** pour le calcul du retrait (il est au ras
+    de la marge, x0 ≈ baseline) : il ancre la 1re ligne au niveau 0 malgré le
+    retrait de 1re ligne du texte (le texte est tabulé après le marqueur, à ~148,
+    alors que les lignes de continuation reviennent à la marge). On ne retire le
+    marqueur que des runs, juste avant de les normaliser."""
+    blocks: List[TextBlock] = []
+    for gi, grp in enumerate(_group_indent_blocks(lines, baseline)):
+        runs: List[TextRun] = []
+        for li, words in enumerate(grp["lines"]):
+            if gi == 0 and li == 0 and words and _BARE_MARK.fullmatch(words[0]["text"]):
+                words = words[1:]  # retire le mot-marqueur « [N] »
+            runs.extend(_line_runs(words))
+        runs = _normalize_runs(runs)
+        if runs:
+            blocks.append(TextBlock(runs=runs, indent=grp["level"]))
+    return blocks
+
+
+def _strip_tail_blocks(blocks: List[TextBlock]) -> List[TextBlock]:
+    """Tronque les blocs du dernier paragraphe au dispositif/liste des procureurs.
+
+    Le dispositif (« Pourvoi accueilli ») et la liste des procureurs sont en
+    retrait dans le PDF (donc capturés comme blocs) : on les retire en coupant à
+    l'indice calculé par `_tail_cut_index` sur le texte à plat des blocs."""
+    flat = "".join(_runs_text(b.runs) for b in blocks)
+    cut = _tail_cut_index(flat)
+    if cut >= len(flat):
+        return blocks
+    out: List[TextBlock] = []
+    total = 0
+    for b in blocks:
+        btext = _runs_text(b.runs)
+        if total + len(btext) <= cut:
+            out.append(b)
+            total += len(btext)
+        else:
+            kept = _strip_tail_runs_to(b.runs, cut - total)
+            if kept:
+                out.append(TextBlock(runs=kept, indent=b.indent))
+            break
+    return out
+
+
+def _strip_tail_runs_to(runs: List[TextRun], keep: int) -> List[TextRun]:
+    """Tronque une liste de runs aux `keep` premiers caractères (bords nettoyés)."""
+    out: List[TextRun] = []
+    total = 0
+    for r in runs:
+        if total + len(r.text) <= keep:
+            out.append(r)
+            total += len(r.text)
+        else:
+            head = r.text[: keep - total]
+            if head:
+                out.append(TextRun(head, r.italic, r.bold))
+            break
+    if out:
+        out[-1].text = out[-1].text.rstrip()
+    return [r for r in out if r.text]
 
 
 def _candidate_block(lines: List[tuple]) -> List[tuple]:
@@ -529,6 +671,8 @@ def _extract_paragraphs(pages) -> Dict[int, "_ParaData"]:
         for row in _lines(p.extract_words(extra_attrs=["fontname"])):
             body_lines.append((row["text"], row["words"]))
 
+    baseline = _body_baseline(body_lines)
+
     # Segments : lignes de [N] (incluse) jusqu'avant [N+1]. `pre` = avant [1].
     pre: List[tuple] = []
     segments: List[dict] = []
@@ -554,17 +698,28 @@ def _extract_paragraphs(pages) -> Dict[int, "_ParaData"]:
     result: Dict[int, "_ParaData"] = {}
     for i, seg in enumerate(segments):
         prose, tail = _block_split(seg["lines"])
-        runs = _lines_to_runs(prose)
+        blocks = _lines_to_blocks(prose, baseline)
         if i + 1 == len(segments):  # dernier paragraphe → nettoyer la queue
-            runs = _strip_tail_runs(runs)
+            blocks = _strip_tail_blocks(blocks)
         result[seg["n"]] = (
-            runs,
+            blocks,
             _split_into_headings(pending),
             _split_into_headings(pending_cand),
         )
         pending = tail
         pending_cand = _candidate_block(seg["lines"])
     return result
+
+
+def _body_baseline(body_lines: List[tuple]) -> float:
+    """Marge de gauche du corps (x0 le plus fréquent) ; ~90 pour les PDF CSC.
+
+    Sert d'origine au calcul du retrait. Le corps domine largement les lignes,
+    donc le x0 modal est la marge de base même en présence de citations/listes."""
+    counts = Counter(
+        round(words[0]["x0"]) for _t, words in body_lines if words
+    )
+    return float(counts.most_common(1)[0][0]) if counts else 90.0
 
 
 # Ligne d'attribution d'opinion (« THE COURT — », « LA JUGE MOREAU — »).
@@ -609,8 +764,9 @@ def _extract_lead_ins(pages, opinions: List[_Opinion]) -> Dict[int, str]:
 
 
 def _make_paragraph(number: int, data: "_ParaData") -> Paragraph:
-    runs, headings, candidates = data
-    text = _runs_text(runs).strip()
+    blocks, headings, candidates = data
+    runs = [r for b in blocks for r in b.runs]
+    text = " ".join(_runs_text(b.runs) for b in blocks).strip()
     return Paragraph(
         number=number,
         text=text,
@@ -619,6 +775,7 @@ def _make_paragraph(number: int, data: "_ParaData") -> Paragraph:
         headings=headings,
         heading_candidates=candidates,
         runs=runs,
+        blocks=blocks,
     )
 
 
