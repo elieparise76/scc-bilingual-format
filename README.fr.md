@@ -28,6 +28,11 @@ produit un document prêt à relire ou à imprimer.
   du corps — l'URL est construite **de façon déterministe à partir de la citation**,
   sans aucun appel réseau (règle de citation CanLII), et les italiques et le gras
   environnants sont préservés
+- ⚖️ **Liens Justice Canada cliquables** sur les citations de lois révisées (`R.S.C. 1985, c. C-50`
+  / `L.R.C. 1985, c. C-50`) du corps, vers le site **officiel** laws-lois.justice.gc.ca —
+  le chapitre cité est le slug d'URL, construit de façon déterministe sans appel réseau.
+  Limité aux L.R.C. 1985 (les lois annuelles et les suppléments n'ont pas de slug
+  déterministe par chapitre → laissés sans lien, aucun lien mort)
 - 📄 **Document Word soigné** : page de garde bilingue (nom de cause, référence, dates,
   mention d'appel, mots-clés en italique, dispositif *Held / Arrêt*, et une table des
   matières des opinions) ; une table des matières par opinion ; corps en deux colonnes ;

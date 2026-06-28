@@ -1,20 +1,39 @@
-"""Liens hypertexte CanLII sur les références neutres de la Cour suprême.
+"""Liens hypertexte du corps : références neutres → CanLII, lois → Justice Canada.
 
-Détecte les citations neutres « AAAA SCC N » (anglais) et « AAAA CSC N »
-(français) dans le corps du document et transforme chaque occurrence en
-hyperlien cliquable vers CanLII.
+Détecte dans le corps du document deux familles de citations et transforme chaque
+occurrence en hyperlien cliquable :
 
-URL **déterministe**, sans aucun appel réseau : la règle de citation CanLII pose
-que « when a decision has a neutral citation assigned by the issuing court, the
-CanLII citation is entirely based upon the neutral citation ». Le docID = la
-citation, espaces retirés, en minuscules. D'où le patron :
+1. **Références neutres** « AAAA SCC N » (anglais) / « AAAA CSC N » (français)
+   → **CanLII**. URL **déterministe**, sans appel réseau : la règle de citation
+   CanLII pose que « when a decision has a neutral citation assigned by the issuing
+   court, the CanLII citation is entirely based upon the neutral citation ». Le
+   docID = la citation, espaces retirés, en minuscules. D'où le patron :
 
-  « 2024 SCC 5 » → https://www.canlii.org/en/ca/scc/doc/2024/2024scc5/2024scc5.html
-  « 2024 CSC 5 » → https://www.canlii.org/fr/ca/csc/doc/2024/2024csc5/2024csc5.html
+     « 2024 SCC 5 » → https://www.canlii.org/en/ca/scc/doc/2024/2024scc5/2024scc5.html
+     « 2024 CSC 5 » → https://www.canlii.org/fr/ca/csc/doc/2024/2024csc5/2024csc5.html
 
-⚠️ CanLII renvoie 403 à tout accès automatisé (anti-bot) : l'URL ne peut donc pas
-être validée par requête HTTP. C'est attendu — elle est garantie par la règle de
-citation ci-dessus et reste valide au clic humain dans Word.
+   ⚠️ CanLII renvoie 403 à tout accès automatisé (anti-bot) : l'URL ne peut donc
+   pas être validée par requête HTTP. C'est attendu — elle est garantie par la
+   règle de citation ci-dessus et reste valide au clic humain dans Word.
+
+2. **Lois fédérales des Lois révisées du Canada (1985)** « R.S.C. 1985, c. C-50 »
+   (anglais) / « L.R.C. 1985, c. C-50 » (français) → **Justice Canada**
+   (laws-lois.justice.gc.ca), le site officiel. URL **déterministe** : pour une loi
+   des L.R.C. 1985, le **chapitre cité est le slug d'URL** (R.S.C. → /eng/acts/,
+   L.R.C. → /fra/lois/) :
+
+     « R.S.C. 1985, c. C-50 » → https://laws-lois.justice.gc.ca/eng/acts/C-50/
+     « L.R.C. 1985, c. C-50 » → https://laws-lois.justice.gc.ca/fra/lois/C-50/
+
+   Contrairement à CanLII, Justice Canada ne bloque pas les bots : l'URL est donc
+   **vérifiable par requête HTTP** (utilisé pour garantir zéro lien mort).
+   **Limité aux R.S.C./L.R.C. 1985** : les lois annuelles « S.C. 2012, c. 1 » et
+   les suppléments « c. 1 (5e suppl.) » n'ont **pas** de slug déterministe par
+   chapitre (l'Income Tax Act « R.S.C. 1985, c. 1 (5th Supp.) » a le slug réel
+   « I-3.3 », pas « 1 » ; « /eng/acts/1/ » → 404). La contrainte « chapitre =
+   LETTRE(S)-CHIFFRE » du regex exclut automatiquement ces cas (numéros nus). →
+   aucun lien mort. (Extension future possible : liens d'article pinpoint
+   « /section-N.html » ; non implémenté, on ne lie que le niveau loi.)
 
 Point d'injection : `renderer._emit_runs`, seul endroit qui écrit les runs du
 corps (prose ET blocs en retrait, donc les citations à l'intérieur d'une citation
@@ -41,6 +60,21 @@ _CANLII = {
 # et les années « [2017] » (pas de cour) — seul « AAAA SCC/CSC N » est capté.
 _CITE_LINK = re.compile(r"\b(\d{4})\s+(SCC|CSC)\s+(\d+)\b")
 
+# Patron d'URL Justice Canada par marqueur. R.S.C. (anglais) → /eng/acts,
+# L.R.C. (français) → /fra/lois ; le chapitre cité est le slug d'URL.
+_JUSTICE = {
+    "RSC": "https://laws-lois.justice.gc.ca/eng/acts/{ch}/",
+    "LRC": "https://laws-lois.justice.gc.ca/fra/lois/{ch}/",
+}
+# Loi des L.R.C. 1985 : groupes (marqueur, chapitre). Le marqueur (R.S.C. vs
+# L.R.C., points facultatifs) donne la langue de l'URL ; le chapitre doit être
+# LETTRE(S)-CHIFFRE (« C-50 », « F-7 », « P-1 », « C-46.1 ») — cette contrainte
+# **exclut** les lois annuelles « S.C. 2012, c. 1 » et les suppléments
+# « c. 1 (5e suppl.) » (chapitres nus, sans slug déterministe → non liés).
+_STATUTE_LINK = re.compile(
+    r"\b(R\.?S\.?C\.?|L\.?R\.?C\.?)\s+1985,?\s+c\.?\s*([A-Z]{1,2}-\d+(?:\.\d+)?)\b"
+)
+
 # --- Style du lien (constantes uniques, faciles à changer) ------------------- #
 # Défaut : bleu hyperlien Word + souligné, la convention reconnaissable
 # « cliquable ». Pour un rendu sobre (noir, sans soulignement) :
@@ -54,6 +88,39 @@ _LINK_UNDERLINE = True
 def canlii_url(year: str, court: str, num: str) -> str:
     """Construit l'URL CanLII d'une référence neutre (aucun appel réseau)."""
     return _CANLII[court].format(y=year, n=num)
+
+
+def justice_url(marker: str, chapter: str) -> str:
+    """URL Justice Canada d'une loi R.S.C./L.R.C. 1985 (aucun appel réseau).
+
+    Le marqueur (« R.S.C. »/« L.R.C. », points facultatifs) donne la langue ;
+    le chapitre cité est le slug d'URL.
+    """
+    key = "RSC" if marker.upper().replace(".", "").startswith("RSC") else "LRC"
+    return _JUSTICE[key].format(ch=chapter)
+
+
+def _link_spans(text):
+    """(début, fin, url) de tous les liens du texte, triés, sans chevauchement.
+
+    Collecte les deux familles (références neutres → CanLII, lois → Justice
+    Canada), trie par position et écarte tout chevauchement (garde le premier).
+    Un même run peut contenir les deux types.
+    """
+    spans = []
+    for m in _CITE_LINK.finditer(text):
+        year, court, num = m.groups()
+        spans.append((m.start(), m.end(), canlii_url(year, court, num)))
+    for m in _STATUTE_LINK.finditer(text):
+        marker, chapter = m.groups()
+        spans.append((m.start(), m.end(), justice_url(marker, chapter)))
+    spans.sort()
+    out, last = [], -1
+    for s, e, url in spans:
+        if s >= last:  # écarte un chevauchement (garde le premier rencontré)
+            out.append((s, e, url))
+            last = e
+    return out
 
 
 def _add_hyperlink(para, url, text, *, italic=False, bold=False, size=None) -> None:
@@ -96,30 +163,31 @@ def _add_hyperlink(para, url, text, *, italic=False, bold=False, size=None) -> N
 
 def emit_runs(para, runs, size=None) -> None:
     """Écrit les fragments stylés dans `para`, en transformant chaque référence
-    neutre CSC en hyperlien CanLII (le reste en runs normaux), dans l'ordre.
+    neutre CSC en hyperlien CanLII et chaque loi R.S.C./L.R.C. 1985 en hyperlien
+    Justice Canada (le reste en runs normaux), dans l'ordre.
 
     `size` (un `Pt`, ou None) force le corps des runs (texte en retrait, plus
-    petit). Les citations tiennent dans un **seul** run roman (le nom de cause
-    italique est un run distinct), donc le découpage intra-run suffit : on
-    n'essaie pas de recoller une citation coupée entre deux runs (cas très rare).
+    petit). Citations et lois tiennent dans un **seul** run roman (le nom de
+    cause / titre de loi italique est un run distinct), donc le découpage
+    intra-run suffit : on n'essaie pas de recoller une citation coupée entre deux
+    runs (cas très rare).
     """
     for r in runs:
         pos = 0
-        for m in _CITE_LINK.finditer(r.text):
-            before = r.text[pos:m.start()]
+        for s, e, url in _link_spans(r.text):
+            before = r.text[pos:s]
             if before:
                 run = para.add_run(before)
                 run.italic, run.bold = r.italic, r.bold
                 if size is not None:
                     run.font.size = size
-            year, court, num = m.groups()
             _add_hyperlink(
-                para, canlii_url(year, court, num), m.group(0),
+                para, url, r.text[s:e],
                 italic=r.italic, bold=r.bold, size=size,
             )
-            pos = m.end()
+            pos = e
         rest = r.text[pos:]
-        if rest or pos == 0:  # le reste, OU le run entier s'il n'a aucune citation
+        if rest or pos == 0:  # le reste, OU le run entier s'il n'a aucun lien
             run = para.add_run(rest if pos else r.text)
             run.italic, run.bold = r.italic, r.bold
             if size is not None:
