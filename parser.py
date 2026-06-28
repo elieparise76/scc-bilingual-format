@@ -366,6 +366,12 @@ def _strip_tail_runs(runs: List[TextRun]) -> List[TextRun]:
 _SENT_END = re.compile(r"[.?!][\"'”’»]*$|[^.\s][)\]][\"'”’»]*$")
 _COLON_END = re.compile(r":\s*$")
 _DASH_END = re.compile(r"—\s*$")  # ligne d'auteur d'opinion (lead-in)
+# Ligne d'**attribution d'une opinion** : entièrement en CAPITALES, finissant par
+# « — » (« LA JUGE MOREAU — », « MARTIN J. — », « THE COURT — »). L'absence de
+# minuscule la distingue des nombreuses lignes de prose, de sommaire (mots-clés)
+# ou de procureurs qui finissent aussi par un tiret cadratin (« … Négligence
+# criminelle — », « … the Act — », « … Ministère de la Justice — »).
+_LEAD_IN_AUTHOR = re.compile(r"^(?=[^a-zà-ÿ]*[A-ZÀ-Þ])[^a-zà-ÿ]*—\s*$")
 _BARE_MARK = re.compile(r"\[\d+\]")
 
 
@@ -420,11 +426,44 @@ def _is_heading_block(block: List[tuple]) -> bool:
     return False
 
 
+def _opinion_break_index(lines: List[tuple]) -> Optional[int]:
+    """Index où **débute le matériel inter-opinions** dans un segment, ou None.
+
+    Quand le dernier paragraphe d'une opinion est immédiatement suivi d'une autre
+    opinion, son segment englobe (après sa prose) la mention d'attribution de
+    l'opinion suivante, sa **table des matières imprimée** éventuelle, puis le 1er
+    sous-titre de cette opinion. Repère le plus tôt de : la **ligne d'auteur en
+    capitales finissant par « — »** (`_LEAD_IN_AUTHOR`) ou la **table des matières
+    imprimée** (`_PRINTED_TOC`). Le préambule du lead-in (« Version française des
+    motifs… ») est *au-dessus* de la ligne d'auteur ; il est récupéré par la
+    recherche de frontière de prose dans `_block_split` (il ne finit pas une
+    phrase, donc il tombe naturellement après la frontière)."""
+    for i, (text, _w) in enumerate(lines):
+        if _LEAD_IN_AUTHOR.match(text.strip()) or _PRINTED_TOC.search(text):
+            return i
+    return None
+
+
 def _block_split(lines: List[tuple]) -> tuple:
     """(prose, bloc-titre) d'un segment. Le bloc-titre = lignes après la
     frontière de prose, **si elles forment un vrai bloc de sous-titres**. Sinon
     tout reste en prose : frontière finissant par « : » (liste/citation
-    énumérée), ou bloc cité ayant fui (`_is_heading_block`)."""
+    énumérée), ou bloc cité ayant fui (`_is_heading_block`).
+
+    Cas particulier (dernier ¶ d'une opinion suivi d'une autre) : si le segment
+    contient le lead-in / la table des matières de l'opinion suivante
+    (`_opinion_break_index`), la frontière de prose est cherchée **uniquement
+    avant** ce point — sinon les entrées de la table imprimée (« par. 320.24(4) »,
+    dont « 4) » ressemble à une fin de phrase) leurraient `_find_boundary` et tout
+    le bloc inter-opinions restait collé à la prose. Tout ce qui suit la frontière
+    (préambule + ligne d'auteur + table imprimée + 1er sous-titre de l'opinion
+    suivante) part en `tail` ; `_split_into_headings` l'écarte ensuite via
+    `_PRINTED_TOC` / `_strip_lead_in`."""
+    brk = _opinion_break_index(lines)
+    if brk is not None:
+        b = _find_boundary(lines[:brk])
+        cut = b + 1 if b is not None else brk
+        return lines[:cut], lines[cut:]
     b = _find_boundary(lines)
     if b is None or _COLON_END.search(lines[b][0].rstrip()):
         return lines, []
