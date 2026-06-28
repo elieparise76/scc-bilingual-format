@@ -77,6 +77,15 @@ _DATE_LABEL = {"fr": "Jugement rendu", "en": "Judgment rendered"}
 _TOC_LABEL = {"fr": "Table des matières", "en": "Table of Contents"}
 _DOCKET_LABEL = {"fr": "Dossier no", "en": "Case No."}
 _CORAM_LABEL = {"fr": "CORAM :", "en": "CORAM:"}
+# Avis de non-officialité (bas de la page de garde) : le document est dérivé des
+# PDF officiels mais remis en forme (côte à côte, réaligné) → sans valeur officielle.
+_NOTICE = {
+    "fr": "Version non officielle, remise en forme à partir des motifs officiels "
+          "de la Cour suprême du Canada. Consultez la version officielle sur "
+          "decisions.scc-csc.ca.",
+    "en": "Unofficial version, reformatted from the official reasons of the Supreme "
+          "Court of Canada. Consult the official version at decisions.scc-csc.ca.",
+}
 # Taquet droit (avec points de conduite) pour la table des matières, dans une
 # cellule = largeur de texte de la cellule (_COL_W moins le gap intérieur).
 _TOC_TAB = Emu(_COL_W - _CELL_GAP)
@@ -547,6 +556,10 @@ def _add_front_matter(
         return items
 
     _add_contents_toc(table, lang_left, lang_right, reasons)
+
+    # Avis de non-officialité, bien détaché au bas de la page de garde.
+    _bi_row(table, lang_left, lang_right, lambda lang: _NOTICE[lang],
+            italic=True, align=center, before=16)
 
 
 # --------------------------------------------------------------------------- #
