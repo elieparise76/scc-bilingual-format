@@ -473,10 +473,25 @@ def _tail_cut_index(text: str) -> int:
 # Fin de phrase, deux formes :
 #   • « .?! » + guillemets fermants éventuels (« threshold. », « Act? », « … 393). ») ;
 #   • une parenthèse/crochet fermant précédé d'un caractère **autre que « . »**
-#     (« … p. 154) » = fin de citation).
+#     (« … p. 154) », « … (2022 QCCA 185) », « … [par. 4] » = fin de citation).
 # On exclut ainsi « … JJ.A.) » / « … para. 38.] » (« .) » / « .] » = abréviation
 # dans une parenthèse, débordement de titre) qui ne sont PAS des fins de phrase.
+# ⚠️ Cette 2e branche capte aussi une **référence de sous-alinéa** terminant la
+# ligne (« … Section 24(1) ») qui n'est PAS une fin de phrase : on la retranche
+# via `_SUBSECTION_END` / `_ends_sentence` — et NON en interdisant le chiffre
+# avant « ) », ce qui casserait les vraies fins de citation « … p. 154) » /
+# « … (2022 QCCA 185) » / « … [par. 4] » (très fréquentes en fin de paragraphe).
 _SENT_END = re.compile(r"[.?!][\"'”’»]*$|[^.\s][)\]][\"'”’»]*$")
+# Référence législative « numéro(sous-numéro) » terminant la ligne, SANS
+# ponctuation finale : « s. 24(1) », « par. 320.24(4) », « Section 52(1) ». Sa
+# signature : la parenthèse interne s'ouvre **juste après un chiffre** (« 24(1) »),
+# au contraire d'une citation finale « (2022 QCCA 185) » / « [par. 4] » (espace ou
+# lettre avant le nombre). Une telle référence nue n'est jamais une fin de phrase :
+# soit un retour-ligne au fil d'une phrase (« … au sens du par. 24(1) lorsque… »),
+# soit le **débordement d'un sous-titre** (« … Under Section 24(1) », ¶200 du
+# 20546). Une phrase qui se clôt après une référence garde son point
+# (« … du par. 24(1). ») → captée par la 1re branche de `_SENT_END`.
+_SUBSECTION_END = re.compile(r"\d\(\d+\)$")
 _COLON_END = re.compile(r":\s*$")
 _DASH_END = re.compile(r"—\s*$")  # ligne d'auteur d'opinion (lead-in)
 # Ligne d'**attribution d'une opinion** : entièrement en CAPITALES, finissant par
@@ -488,14 +503,27 @@ _LEAD_IN_AUTHOR = re.compile(r"^(?=[^a-zà-ÿ]*[A-ZÀ-Þ])[^a-zà-ÿ]*—\s*$")
 _BARE_MARK = re.compile(r"\[\d+\]")
 
 
+def _ends_sentence(text: str) -> bool:
+    """Vrai si `text` finit une phrase.
+
+    `_SENT_END` en capte les deux formes ; on retranche la **référence de
+    sous-alinéa nue en fin de ligne** (« … s. 24(1) »), qui n'en est pas une
+    (voir `_SUBSECTION_END`) — sinon `_find_boundary` plaçait la frontière sur
+    le débordement d'un sous-titre (« … Under Section 24(1) ») et le tronquait."""
+    t = text.rstrip()
+    return bool(_SENT_END.search(t)) and not _SUBSECTION_END.search(t)
+
+
 def _find_boundary(lines: List[tuple]) -> Optional[int]:
     """Index de la dernière ligne de **prose** (fin de phrase ou « : »).
 
     Les lignes au **préfixe de plan** sont ignorées : un titre peut finir par
     « ? » (« A. … de la Loi? ») sans être une fin de prose. Le débordement d'un
     titre finissant par « .) » (« … JJ.A.) ») n'est pas non plus une frontière —
-    c'est `_SENT_END` qui l'écarte (« .) » ≠ fin de phrase, contrairement à
-    « ). »). Tout ce qui suit la frontière = le bloc de sous-titres.
+    `_SENT_END` l'écarte (« .) » ≠ fin de phrase, contrairement à « ). ») ; de
+    même un débordement finissant par une **référence de sous-alinéa**
+    (« … Section 24(1) ») est écarté par `_ends_sentence`. Tout ce qui suit la
+    frontière = le bloc de sous-titres.
 
     NB : on n'essaie PAS de « suivre » les débordements de titre ici. Une ligne
     de prose-citation commençant par une initiale (« J. P. J. Maingot, … »)
@@ -507,7 +535,7 @@ def _find_boundary(lines: List[tuple]) -> Optional[int]:
         if _HEADING.match(text):
             continue
         t = text.rstrip()
-        if _SENT_END.search(t) or _COLON_END.search(t):
+        if _ends_sentence(t) or _COLON_END.search(t):
             boundary = i
     return boundary
 
@@ -521,21 +549,66 @@ def _strip_lead_in(block: List[tuple]) -> List[tuple]:
     return block[start:]
 
 
+# Mots-outils qui restent en minuscule dans un titre anglais en « Title Case »
+# (articles, conjonctions de coordination, prépositions courtes, « v. » des
+# intitulés). Leur minuscule ne compte donc PAS comme de la prose.
+_TITLE_STOP = frozenset(
+    "a an and as at but by for from in into nor of on onto or per the to up "
+    "upon v vs via with".split()
+)
+
+
+def _is_title_case(text: str) -> bool:
+    """Le texte est-il un titre anglais en « Title Case » ?
+
+    Vrai si le 1er mot est capitalisé et qu'AUCUN **mot de fond** n'est en
+    minuscule (les mots-outils `_TITLE_STOP` peuvent l'être). Discrimine, parmi
+    les lignes **pleine largeur**, un vrai titre non numéroté qui déborde
+    (« The Exercise of Recognized Categories of Parliamentary Privilege Is
+    Not… ») de la prose de citation ayant fui, qui est en **casse de phrase** et
+    compte donc de nombreux mots de fond minuscules (« A state, it is said, is
+    sovereign and it is not for the Courts… »).
+
+    NB : les titres FR sont en casse de phrase → non reconnus ici ; ils sont soit
+    numérotés (`_HEADING`), soit récupérés par la réconciliation bilingue depuis
+    l'anglais (`_candidate_block`)."""
+    first = True
+    for tok in text.split():
+        ch = next((c for c in tok if c.isalpha()), None)
+        if ch is None:
+            continue  # purement numérique/ponctuation (« 24(1) », « — »)
+        if first:
+            if not ch.isupper():
+                return False  # un titre commence par une majuscule
+            first = False
+        elif ch.islower():
+            word = tok.strip("(),.;:!?\"'“”‘’«»[]").lower()
+            if word not in _TITLE_STOP:
+                return False  # mot de fond en minuscule → prose, pas un titre
+    return not first
+
+
 def _is_heading_block(block: List[tuple]) -> bool:
     """Le bloc commence-t-il par un vrai sous-titre ?
 
     Un sous-titre commence soit par un **préfixe de plan**, soit (non numéroté)
-    par une **ligne courte commençant par une lettre** (« Charter Interpretation »,
-    « Definition »). Un bloc cité qui a fui (prose pleine largeur, ou ligne de
-    citation « (Voir… » / note « [Nous soulignons.] ») est rejeté → il reste dans
-    le paragraphe précédent."""
+    par une ligne commençant par une lettre qui est **soit courte**
+    (« Charter Interpretation », « Definition »), **soit pleine largeur mais en
+    Title Case** (titre non numéroté qui déborde, « The Exercise of Recognized
+    Categories of Parliamentary Privilege Is Not / Subject to the Charter »). Un
+    bloc cité qui a fui est rejeté : il commence par un caractère non alphabétique
+    (note « [Nous soulignons.] », renvoi « (Voir… »), ou — pleine largeur — il est
+    en **casse de phrase** et non en Title Case (« A state, it is said, is
+    sovereign… »). Il reste alors dans le paragraphe précédent."""
     for text, words in _strip_lead_in(block):
         t = text.strip()
         if not t:
             continue
         if _HEADING.match(text):
             return True
-        return _line_x1(words) <= _FULL_WIDTH and t[:1].isalpha()
+        return t[:1].isalpha() and (
+            _line_x1(words) <= _FULL_WIDTH or _is_title_case(t)
+        )
     return False
 
 
@@ -787,7 +860,7 @@ def _candidate_block(lines: List[tuple]) -> List[tuple]:
         if _LINE_MARKER.match(text):
             break  # ne pas avaler la ligne du marqueur « [N] »
         t = text.rstrip()
-        ends = bool(_SENT_END.search(t) or _COLON_END.search(t))
+        ends = _ends_sentence(t) or bool(_COLON_END.search(t))
         if block and not _HEADING.match(text) and ends:
             break  # ligne de prose au-dessus du bloc de titres
         block.append((text, words))
