@@ -20,5 +20,8 @@ env/
 *.docx
 ~$*
 
+# Preview intermediates (PDF only; images are committed for GitHub display)
+preview/*.pdf
+
 # Claude.md, version locale avec préférences
 CLAUDE.local.md

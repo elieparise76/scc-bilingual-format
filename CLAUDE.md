@@ -23,6 +23,19 @@ python main.py 20264 --output chemin.docx
 python main.py 20264 --pdf-en en.pdf --pdf-fr fr.pdf   # fallback PDFs locaux
 ```
 
+## Updating the README preview
+
+To regenerate the bilingual document preview displayed on GitHub:
+
+```bash
+# Requires: LibreOffice and Poppler
+# brew install libreoffice poppler
+
+python generate_preview.py
+```
+
+This generates a sample document from item 20264, extracts the first 10 pages as PNG images, and places them in `preview/pages/`. The images are committed to git so they display in README.md; intermediate PDFs/DOCXs are gitignored.
+
 ## Architecture
 
 Pipeline en 5 étapes, chacune un module avec une fonction-livrable :
