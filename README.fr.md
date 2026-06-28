@@ -42,18 +42,23 @@ pip install -r requirements.txt
 
 ## Utilisation
 
-L'entrée est l'**item ID Lexum** de la décision — le nombre dans l'URL de la décision
-sur `decisions.scc-csc.ca/.../item/<ID>/index.do` (ex. `20264` pour *2024 CSC 5*).
+Entrer la **référence neutre** ou l'**item ID Lexum** :
 
 ```bash
-python main.py 20264
+python main.py "2024 CSC 5"
 # → scc_20264_bilingue.docx   (anglais | français)
 
+python main.py 20264           # équivalent — item ID issu de l'URL de la décision
+
 # Options
-python main.py 20264 --lang-order fr               # français à gauche (défaut : en)
-python main.py 20264 --output chemin/sortie.docx
-python main.py 20264 --pdf-en en.pdf --pdf-fr fr.pdf   # fournir les PDF localement
+python main.py "2024 CSC 5" --lang-order fr               # français à gauche (défaut : en)
+python main.py "2024 CSC 5" --output chemin/sortie.docx
+python main.py 20264 --pdf-en en.pdf --pdf-fr fr.pdf      # fournir les PDF localement
 ```
+
+Les formes `CSC` (français) et `SCC` (anglais) de la référence sont toutes deux
+acceptées et renvoient au même document. L'item ID est le nombre dans l'URL de la
+décision sur `decisions.scc-csc.ca/.../item/<ID>/index.do`.
 
 > **Astuce Word** : l'en-tête utilise des champs dynamiques (numéro de page, juge
 > courant). Ils sont générés avec une valeur en cache pour s'afficher à l'ouverture ;
@@ -87,9 +92,7 @@ Python 3 · [httpx](https://www.python-httpx.org/) · [pdfplumber](https://githu
 
 ## État et suite
 
-Le pipeline complet est fonctionnel. À venir :
-
-- Résolution **référence neutre → item ID** (entrer `2024 CSC 5` au lieu de `20264`)
+Le pipeline complet est fonctionnel, y compris la résolution de référence neutre.
 
 Décisions de test dans [`samples/`](samples/) : `20264` (unanime, « La Cour »),
 `20701` (divisée, majorité + dissidence) et `20546` (longue, avec sous-titres non

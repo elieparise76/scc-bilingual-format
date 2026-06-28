@@ -39,18 +39,23 @@ pip install -r requirements.txt
 
 ## Usage
 
-The input is the decision's **Lexum item ID** — the number in the decision's URL on
-`decisions.scc-csc.ca/.../item/<ID>/index.do` (e.g. `20264` for *2024 SCC 5*).
+Pass either the **neutral citation** or the **Lexum item ID**:
 
 ```bash
-python main.py 20264
+python main.py "2024 SCC 5"
 # → scc_20264_bilingue.docx   (English | French)
 
+python main.py 20264           # equivalent — item ID from the decision URL
+
 # Options
-python main.py 20264 --lang-order fr               # French on the left (default: en)
-python main.py 20264 --output path/to/output.docx
-python main.py 20264 --pdf-en en.pdf --pdf-fr fr.pdf   # provide the PDFs locally
+python main.py "2024 SCC 5" --lang-order fr               # French on the left (default: en)
+python main.py "2024 SCC 5" --output path/to/output.docx
+python main.py 20264 --pdf-en en.pdf --pdf-fr fr.pdf      # provide the PDFs locally
 ```
+
+Both `SCC` (English) and `CSC` (French) citation forms are accepted and resolve to
+the same document. The item ID is the number in the decision URL on
+`decisions.scc-csc.ca/.../item/<ID>/index.do`.
 
 > **Word tip**: the header uses dynamic fields (page number, current judge). They are
 > generated with a cached value so they display on open; if they ever show blank,
@@ -82,9 +87,7 @@ Python 3 · [httpx](https://www.python-httpx.org/) · [pdfplumber](https://githu
 
 ## Status and next steps
 
-The full pipeline is functional. Coming up:
-
-- **Neutral citation → item ID** resolution (enter `2024 SCC 5` instead of `20264`)
+The full pipeline is functional, including neutral citation resolution.
 
 Test decisions in [`samples/`](samples/): `20264` (unanimous, "The Court"),
 `20701` (split, majority + dissent) and `20546` (long, with unnumbered English

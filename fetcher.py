@@ -1,15 +1,14 @@
 """Phase 1 — Fetcher.
 
 Récupère les deux PDFs (EN + FR) d'une décision CSC à partir de son
-*item ID* Lexum.
+*item ID* Lexum ou de sa référence neutre.
 
-Pattern d'URL découvert sur decisions.scc-csc.ca : le PDF d'une décision
-se télécharge directement à
+Pattern d'URL : le PDF d'une décision se télécharge directement à
     https://decisions.scc-csc.ca/scc-csc/scc-csc/{lang}/{item_id}/1/document.do
 où {lang} ∈ {en, fr}. Les deux langues partagent le même item_id.
 
-(La résolution « référence neutre → item_id » est laissée pour plus tard ;
-pour l'instant l'item_id est fourni directement en entrée.)
+Si une référence neutre est fournie ('2024 SCC 5'), elle est résolue en item_id
+via citation.resolve_item_id avant le téléchargement.
 """
 
 from __future__ import annotations
@@ -51,11 +50,19 @@ def fetch_pdfs(item_id: str | int) -> Tuple[bytes, bytes]:
     """Télécharge les PDFs anglais et français d'une décision CSC.
 
     Args:
-        item_id: identifiant Lexum de la décision (ex. "20264").
+        item_id: item ID Lexum (ex. "20264") ou référence neutre (ex. "2024 SCC 5").
+                 Si la valeur contient des lettres, elle est résolue en item ID via
+                 citation.resolve_item_id.
 
     Returns:
         Tuple (pdf_en, pdf_fr) en bytes (gardés en mémoire).
     """
+    # Résolution référence neutre → item ID si l'argument n'est pas purement numérique.
+    ref = str(item_id).strip()
+    if not ref.isdigit():
+        from citation import resolve_item_id
+        item_id = resolve_item_id(ref)
+
     with httpx.Client() as client:
         pdf_en = _download(client, item_id, "en")
         pdf_fr = _download(client, item_id, "fr")
