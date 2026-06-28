@@ -1,74 +1,96 @@
 # SCC Bilingual Formatter
 
-Outil en ligne de commande qui transforme une décision de la **Cour suprême du Canada** en un document Word (`.docx`) **bilingue côte à côte** : français à gauche, anglais à droite, paragraphes alignés par numéro.
+*Lire en [français](README.fr.md).*
 
-À partir du seul identifiant de la décision, l'outil télécharge les deux versions officielles, en extrait la structure (juges, opinions, paragraphes, sous-titres) et produit un document prêt à relire ou à imprimer.
+A command-line tool that turns a **Supreme Court of Canada** decision into a
+**side-by-side bilingual** Word document (`.docx`): English in the left column,
+French in the right, paragraphs aligned by number.
 
-## Fonctionnalités
+From a single decision identifier, the tool downloads both official versions,
+extracts their structure (judges, opinions, paragraphs, headings) and produces a
+document ready to proofread or print.
 
-- 📥 **Téléchargement automatique** des PDF anglais et français depuis `decisions.scc-csc.ca`
-- 🧩 **Extraction structurée** : titre, référence neutre, opinions (majorité / concordance / dissidence) avec leur juge rédacteur et leur plage de paragraphes, et les **sous-titres** du plan (`I.`, `A.`, `(1)`…)
-- ↔️ **Alignement** des paragraphes ¶N français ↔ ¶N anglais
-- 📄 **Document Word soigné** : tableau deux colonnes, en-tête courant qui indique le juge des motifs de la page (et alterne anglais / français à chaque page), table des matières des opinions, Times New Roman, texte justifié
+## Features
+
+- 📥 **Automatic download** of the English and French PDFs from `decisions.scc-csc.ca`
+- 🧩 **Structured extraction**: title, neutral citation, hearing and judgment dates,
+  the "on appeal from" mention and the headnote keywords; opinions (majority /
+  concurring / dissenting) with their authoring judge and paragraph range; and the
+  outline **headings** (`I.`, `A.`, `(1)`…, including unnumbered ones)
+- ↔️ **Alignment** of paragraphs ¶N English ↔ ¶N French, with **bilingual heading
+  reconciliation** — where one language detects a heading the other missed, it is
+  recovered from the parallel version (exact parity on all test decisions)
+- ↳ **Indented text** — block quotes, statutory extracts and enumerated lists are
+  detected in the source PDF and reproduced indented and in a slightly smaller font
+- 📄 **Polished Word document**: bilingual cover page (case name, citation, dates,
+  appeal mention, italic keywords, *Held / Arrêt* disposition, and a table of contents
+  of the opinions); a per-opinion table of contents; a two-column body; a running
+  header showing the page's authoring judge that **alternates English / French each
+  page**; Times New Roman; justified text; inline italics and bold preserved
 
 ## Installation
 
 ```bash
-git clone https://github.com/<ton-utilisateur>/scc-bilingual.git
+git clone https://github.com/elieparise76/scc-bilingual.git
 cd scc-bilingual
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Utilisation
+## Usage
 
-L'entrée est l'**item ID Lexum** de la décision — le nombre dans l'URL de la décision sur
-`decisions.scc-csc.ca/.../item/<ID>/index.do` (ex. `20264` pour *2024 CSC 5*).
+The input is the decision's **Lexum item ID** — the number in the decision's URL on
+`decisions.scc-csc.ca/.../item/<ID>/index.do` (e.g. `20264` for *2024 SCC 5*).
 
 ```bash
 python main.py 20264
-# → scc_20264_bilingue.docx   (français | anglais)
+# → scc_20264_bilingue.docx   (English | French)
 
 # Options
-python main.py 20264 --lang-order en              # anglais à gauche (défaut : fr)
-python main.py 20264 --output chemin/sortie.docx
-python main.py 20264 --pdf-en en.pdf --pdf-fr fr.pdf   # fournir les PDF localement
+python main.py 20264 --lang-order fr               # French on the left (default: en)
+python main.py 20264 --output path/to/output.docx
+python main.py 20264 --pdf-en en.pdf --pdf-fr fr.pdf   # provide the PDFs locally
 ```
 
-> **Astuce Word** : l'en-tête utilise des champs dynamiques (numéro de page, juge courant). S'ils s'affichent vides à l'ouverture, sélectionne tout (`Cmd/Ctrl+A`) puis appuie sur `F9`, ou lance un aperçu avant impression, pour les rafraîchir.
+> **Word tip**: the header uses dynamic fields (page number, current judge). They are
+> generated with a cached value so they display on open; if they ever show blank,
+> select all (`Cmd/Ctrl+A`) then press `F9`, or open print preview, to refresh them.
 
-## Fonctionnement
+## How it works
 
-Un pipeline en cinq étapes, chacune un module avec une fonction-livrable claire :
+A five-stage pipeline, each stage a module with one clear deliverable function:
 
 ```
-item ID Lexum ("20264")
+Lexum item ID ("20264")
   → fetch_pdfs(item_id) -> (pdf_en, pdf_fr)              # fetcher.py
   → parse_pdf(pdf_bytes) -> Decision                     # parser.py  (×2)
   → align(decision_fr, decision_en) -> [AlignedSection]  # aligner.py
   → render_docx(sections, metadata, output) -> .docx     # renderer.py
-                                                          # main.py orchestre
+                                                          # main.py orchestrates
 ```
 
-La mise en page des décisions de la CSC est un gabarit stable, exploité finement : séparation
-des colonnes de la couverture par position des mots, lecture du bloc d'opinions sous `CORAM`
-comme source de vérité des sections, détection des sous-titres par leur position juste avant un
-marqueur de paragraphe. Voir [`CLAUDE.md`](CLAUDE.md) pour les détails d'implémentation.
+SCC decisions follow a stable template, exploited closely: the cover and opinion
+columns are separated by word coordinates (not `extract_text`, which interleaves
+them); the opinion block under `CORAM` is the source of truth for sections; headings
+are detected by structure (position just before a paragraph marker) rather than
+typography; indented blocks are detected by their horizontal offset from the body
+margin. See [`CLAUDE.md`](CLAUDE.md) for the implementation details.
 
 ## Stack
 
 Python 3 · [httpx](https://www.python-httpx.org/) · [pdfplumber](https://github.com/jsvine/pdfplumber) · [python-docx](https://python-docx.readthedocs.io/)
 
-## État et suite
+## Status and next steps
 
-Le pipeline complet est fonctionnel. À venir :
+The full pipeline is functional. Coming up:
 
-- Résolution **référence neutre → item ID** (entrer `2024 CSC 5` au lieu de `20264`)
-- Mise en forme distincte des **blocs cités en retrait** (nécessite la structure sous-paragraphe)
+- **Neutral citation → item ID** resolution (enter `2024 SCC 5` instead of `20264`)
 
-Décisions de test : `20264` (unanime) et `20701` (divisée), dans [`samples/`](samples/).
+Test decisions in [`samples/`](samples/): `20264` (unanimous, "The Court"),
+`20701` (split, majority + dissent) and `20546` (long, with unnumbered English
+headings and a printed table of contents — the heading-detection stress case).
 
-## Licence
+## License
 
-À déterminer. Les décisions de la Cour suprême du Canada sont reproductibles sans frais
-(Décret sur la reproduction de la législation fédérale).
+To be determined. Supreme Court of Canada decisions may be reproduced free of charge
+(Reproduction of Federal Law Order).
