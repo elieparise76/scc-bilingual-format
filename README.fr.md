@@ -24,6 +24,10 @@ produit un document prêt à relire ou à imprimer.
 - ↳ **Texte en retrait** — citations en bloc, extraits législatifs et listes énumérées
   sont détectés dans le PDF source et reproduits indentés et en corps légèrement plus
   petit
+- 🔗 **Liens CanLII cliquables** sur chaque référence neutre (`AAAA SCC N` / `AAAA CSC N`)
+  du corps — l'URL est construite **de façon déterministe à partir de la citation**,
+  sans aucun appel réseau (règle de citation CanLII), et les italiques et le gras
+  environnants sont préservés
 - 📄 **Document Word soigné** : page de garde bilingue (nom de cause, référence, dates,
   mention d'appel, mots-clés en italique, dispositif *Held / Arrêt*, et une table des
   matières des opinions) ; une table des matières par opinion ; corps en deux colonnes ;

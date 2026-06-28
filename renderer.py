@@ -41,6 +41,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Emu, Inches, Pt, RGBColor
 
+from citation_link import emit_runs as _emit_citation_runs
 from models import AlignedSection, Paragraph, SectionType, TextBlock
 
 _FONT = "Times New Roman"
@@ -601,12 +602,13 @@ def _add_banner_row(
 
 def _emit_runs(para, runs, size=None) -> None:
     """Écrit les fragments stylés (italique/gras) dans un paragraphe ; `size`
-    force le corps (texte en retrait, plus petit)."""
-    for r in runs:
-        run = para.add_run(r.text)
-        run.italic, run.bold = r.italic, r.bold
-        if size is not None:
-            run.font.size = size
+    force le corps (texte en retrait, plus petit).
+
+    Seul point d'écriture des runs du corps (prose et blocs en retrait) : on y
+    transforme chaque référence neutre CSC (« AAAA SCC/CSC N ») en hyperlien
+    CanLII, sans toucher au reste du texte ni à sa mise en forme. Voir
+    `citation_link`."""
+    _emit_citation_runs(para, runs, size)
 
 
 def _style_indent(para, indent: int) -> None:

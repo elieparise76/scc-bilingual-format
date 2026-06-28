@@ -22,6 +22,9 @@ document ready to proofread or print.
   recovered from the parallel version (exact parity on all test decisions)
 - ↳ **Indented text** — block quotes, statutory extracts and enumerated lists are
   detected in the source PDF and reproduced indented and in a slightly smaller font
+- 🔗 **Clickable CanLII links** on every neutral citation (`YYYY SCC N` / `YYYY CSC N`)
+  in the body — the URL is built **deterministically from the citation**, with no network
+  call (CanLII's citation rule), and surrounding italics/bold are preserved
 - 📄 **Polished Word document**: bilingual cover page (case name, citation, dates,
   appeal mention, italic keywords, *Held / Arrêt* disposition, and a table of contents
   of the opinions); a per-opinion table of contents; a two-column body; a running
