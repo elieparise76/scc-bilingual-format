@@ -35,11 +35,13 @@ document ready to proofread or print.
     `{year}_{chapter}` (S.C. → `AnnualStatutes`, L.C. → `LoisAnnuelles`). Limited to
     years **≥ 2001**, where Justice Canada's coverage begins (earlier years 404, so they
     are left unlinked — no dead links).
-- 📄 **Polished Word document**: bilingual cover page (case name, citation, dates,
-  appeal mention, italic keywords, *Held / Arrêt* disposition, and a table of contents
-  of the opinions); a per-opinion table of contents; a two-column body; a running
-  header showing the page's authoring judge that **alternates English / French each
-  page**; Times New Roman; justified text; inline italics and bold preserved
+- 📄 **Polished Word document**: bilingual cover page (unofficial-version notice, case
+  name, citation, docket, dates, parties, coram, appeal mention, italic keywords,
+  *Held / Arrêt* disposition, and a table of contents of the opinions); a per-opinion
+  table of contents; a two-column body; a running header on **every page** (including
+  the cover, where it shows the case name without a judge) that shows the page's
+  authoring judge and **alternates English / French each page**; Times New Roman;
+  justified text; inline italics and bold preserved
 
 ## Installation
 

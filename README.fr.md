@@ -38,10 +38,12 @@ produit un document prêt à relire ou à imprimer.
     `{année}_{chapitre}` (S.C. → `AnnualStatutes`, L.C. → `LoisAnnuelles`). Limité aux
     années **≥ 2001**, début de la couverture de Justice Canada (les années antérieures
     renvoient 404 → laissées sans lien, aucun lien mort).
-- 📄 **Document Word soigné** : page de garde bilingue (nom de cause, référence, dates,
-  mention d'appel, mots-clés en italique, dispositif *Held / Arrêt*, et une table des
-  matières des opinions) ; une table des matières par opinion ; corps en deux colonnes ;
-  en-tête courant qui indique le juge des motifs de la page et **alterne anglais /
+- 📄 **Document Word soigné** : page de garde bilingue (avis de version non officielle,
+  nom de cause, référence, n° de greffe, dates, parties, coram, mention d'appel,
+  mots-clés en italique, dispositif *Held / Arrêt*, et une table des matières des
+  opinions) ; une table des matières par opinion ; corps en deux colonnes ; en-tête
+  courant présent sur **toutes les pages** (y compris la couverture, où il montre le nom
+  de cause sans juge) qui indique le juge des motifs de la page et **alterne anglais /
   français à chaque page** ; Times New Roman ; texte justifié ; italiques et gras inline
   préservés
 

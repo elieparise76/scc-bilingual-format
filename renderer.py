@@ -55,6 +55,9 @@ _CELL_TB = Inches(0.03)
 # Le nom de cause est tronqué pour tenir sur une ligne (sinon il déborde les
 # taquets et la citation ne peut pas atteindre la droite).
 _HEADER_TITLE_MAX = 56
+# Page 1 (couverture) : pas de juge au centre → beaucoup plus de place pour le
+# nom de cause avant de devoir le tronquer.
+_HEADER_TITLE_MAX_FIRST = 90
 
 # Texte « en retrait » (citations en bloc, listes) : corps légèrement plus petit
 # que le corps courant (11 pt) et retrait gauche croissant selon le niveau.
@@ -320,19 +323,24 @@ def _section_label(section: AlignedSection, lang: str, unanimous: bool) -> str:
 # --------------------------------------------------------------------------- #
 # En-tête / pied de page
 # --------------------------------------------------------------------------- #
-def _header_case(title: str) -> str:
+def _header_case(title: str, max_len: int = _HEADER_TITLE_MAX) -> str:
     """Tronque le nom de cause (au mot) pour qu'il tienne sur une ligne."""
-    if len(title) <= _HEADER_TITLE_MAX:
+    if len(title) <= max_len:
         return title
-    return title[:_HEADER_TITLE_MAX].rsplit(" ", 1)[0] + "…"
+    return title[:max_len].rsplit(" ", 1)[0] + "…"
 
 
 def _fill_header(
-    paragraph, title: str, citation: str, ref_style: str, cached: str
+    paragraph, title: str, citation: str, ref_style: str, cached: str,
+    *, with_judge: bool = True,
 ) -> None:
     """En-tête à trois zones par taquets : n° de page (gauche), *cause* — juge
     (centre, cause en italique), citation (droite). Le juge est un champ
     STYLEREF (varie selon la page) ; sans rôle (majoritaire/unanime…).
+
+    `with_judge=False` (page 1 / couverture) : le centre n'affiche que le nom de
+    cause, sans « — » ni champ STYLEREF — la couverture précède toute opinion,
+    donc aucun juge rédacteur, et la page 1 n'utilise plus STYLEREF.
 
     Aucun retrait de paragraphe : les taquets se mesurent depuis la marge et le
     taquet droit à `_CONTENT_W` place la citation **au bord droit**. Le texte des
@@ -346,11 +354,14 @@ def _fill_header(
     pf.tab_stops.add_tab_stop(_COL_W, WD_TAB_ALIGNMENT.CENTER)      # centre
     pf.tab_stops.add_tab_stop(_CONTENT_W, WD_TAB_ALIGNMENT.RIGHT)   # bord droit
 
+    # Page 1 (sans juge) : titre tronqué bien plus tard (plus de place au centre).
+    title_max = _HEADER_TITLE_MAX if with_judge else _HEADER_TITLE_MAX_FIRST
     _add_page_field(paragraph)                          # gauche : n° de page
     paragraph.add_run("\t")
-    paragraph.add_run(_header_case(title)).italic = True  # centre : cause — juge
-    paragraph.add_run(" — ")
-    _add_field(paragraph, f'STYLEREF "{ref_style}"', cached=cached)
+    paragraph.add_run(_header_case(title, title_max)).italic = True  # centre : cause — juge
+    if with_judge:
+        paragraph.add_run(" — ")
+        _add_field(paragraph, f'STYLEREF "{ref_style}"', cached=cached)
     paragraph.add_run("\t")
     paragraph.add_run(citation)                         # droite : citation
     for run in paragraph.runs:
@@ -362,14 +373,23 @@ def _setup_headers_footers(
     doc: Document, meta: DocMetadata, first: AlignedSection
 ) -> None:
     sec = doc.sections[0]
-    # Page 1 (garde) sans en-tête ; en-tête alterné à partir de la page 2.
+    # Page 1 (garde) avec un en-tête propre, SANS juge ; en-tête alterné (avec
+    # juge) à partir de la page 2.
     sec.different_first_page_header_footer = True
+    first_header = sec.first_page_header
     odd_header = sec.header
     even_header = sec.even_page_header
+    first_header.is_linked_to_previous = False
     odd_header.is_linked_to_previous = False
     even_header.is_linked_to_previous = False
-    # Pages impaires → anglais ; paires → français. Après la garde (page 1
-    # sans en-tête), page 2 est paire → français, page 3 impaire → anglais.
+    # Page 1 (impaire) → anglais, sans juge (couverture, pas d'opinion → pas de
+    # STYLEREF, donc aucun risque d'« Error! No text of specified style »).
+    _fill_header(
+        first_header.paragraphs[0], meta.title_en, meta.citation_en,
+        "OpinionRefEN", _lead_author(first.author_en), with_judge=False,
+    )
+    # Pages impaires (sauf 1) → anglais ; paires → français. Après la garde
+    # (page 1), page 2 est paire → français, page 3 impaire → anglais.
     _fill_header(
         odd_header.paragraphs[0], meta.title_en, meta.citation_en,
         "OpinionRefEN", _lead_author(first.author_en),
@@ -503,9 +523,11 @@ def _add_front_matter(
 ) -> None:
     """Page de garde bilingue : un élément par ligne, deux colonnes alignées.
 
-    Contenu de chaque côté, dans sa langue : identité (nom, citation, dates,
-    mention d'appel), mots-clés/tags, mention « Held / Arrêt », puis la table
-    des matières des **motifs** (rôle + auteur + plage de paragraphes)."""
+    Ordre, de haut en bas : **avis de non-officialité** (en tête), **nom de
+    cause** (grand titre, comme avant — il figure aussi dans l'en-tête courant),
+    citation, n° de greffe, date d'audition, date du jugement, **parties**,
+    **CORAM**, puis mention d'appel, mots-clés/tags, mention « Held / Arrêt » et
+    la table des matières des **motifs** (rôle + auteur + plage de paragraphes)."""
     lang_right = "en" if lang_left == "fr" else "fr"
     unanimous = len(sections) == 1
     table = _new_aligned_table(doc)
@@ -517,6 +539,10 @@ def _add_front_matter(
             if getter(lang) else ""
         )
 
+    # Avis de non-officialité en TÊTE de la couverture.
+    _bi_row(table, lang_left, lang_right, lambda lang: _NOTICE[lang],
+            italic=True, align=center)
+    # Titre : pas d'espace avant (suite directe de l'avis).
     _bi_row(table, lang_left, lang_right, meta.title, size=12, bold=True, align=center)
     _bi_row(table, lang_left, lang_right, meta.citation, size=11, bold=True, align=center)
     _bi_row(table, lang_left, lang_right,
@@ -525,6 +551,14 @@ def _add_front_matter(
     _bi_row(table, lang_left, lang_right, dated(_HEARD_LABEL, meta.hearing),
             align=center, before=6)
     _bi_row(table, lang_left, lang_right, dated(_DATE_LABEL, meta.date), align=center)
+
+    # CORAM (avant les parties)
+    _bi_row(table, lang_left, lang_right,
+            lambda lang: (f"{_CORAM_LABEL[lang]} {', '.join(meta.coram(lang))}"
+                          if meta.coram(lang) else ""),
+            before=6)
+
+    # Mention d'appel : avant les parties.
     _bi_row(table, lang_left, lang_right, meta.appeal, italic=True, align=center, before=6)
 
     # Parties : « **Rôle** — noms » (rôle en gras), alignées FR/EN par position.
@@ -535,17 +569,16 @@ def _add_front_matter(
         nom_r, role_r = pr
         _add_party_row(table, [(role_l, nom_l), (role_r, nom_r)],
                        before=(8 if i == 0 else 2))
-
-    # CORAM
-    _bi_row(table, lang_left, lang_right,
-            lambda lang: (f"{_CORAM_LABEL[lang]} {', '.join(meta.coram(lang))}"
-                          if meta.coram(lang) else ""),
-            before=6)
-
     _bi_row(table, lang_left, lang_right, meta.catchwords,
             italic=True, align=WD_ALIGN_PARAGRAPH.JUSTIFY, before=10)
-    _bi_row(table, lang_left, lang_right, meta.held,
-            align=WD_ALIGN_PARAGRAPH.JUSTIFY, before=8)
+
+    # HELD / ARRÊT : premier mot en majuscules, toute la ligne en gras.
+    def held_upper(lang):
+        text = meta.held(lang)
+        return re.sub(r'^(\w+)', lambda m: m.group(1).upper(), text) if text else ""
+
+    _bi_row(table, lang_left, lang_right, held_upper,
+            bold=True, align=WD_ALIGN_PARAGRAPH.JUSTIFY, before=8)
 
     # Table des matières = les motifs (rôle + auteur + plage), même si unanime.
     def reasons(lang):
@@ -557,10 +590,6 @@ def _add_front_matter(
         return items
 
     _add_contents_toc(table, lang_left, lang_right, reasons)
-
-    # Avis de non-officialité, bien détaché au bas de la page de garde.
-    _bi_row(table, lang_left, lang_right, lambda lang: _NOTICE[lang],
-            italic=True, align=center, before=16)
 
 
 # --------------------------------------------------------------------------- #
