@@ -136,19 +136,21 @@ def extract_pages_as_images(pdf_path: Path, output_dir: Path, num_pages: int = 4
 def generate_html_gallery(images: list[Path], sample_id: str) -> str:
     """Generate an HTML/Markdown snippet for a 2x2 grid gallery."""
     html = f"""<!-- Generated preview of SCC {sample_id} -->
-<div id="scc-preview-gallery">
+<div id="scc-preview-gallery" style="max-width: 700px;">
   <p><em>Preview of the bilingual document (first {len(images)} pages, French left / English right):</em></p>
-  <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem; max-width: 800px; margin: 1.5rem 0;">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0;">
 """
 
     for i, img in enumerate(images, 1):
         rel_path = img.relative_to(Path(__file__).parent)
         # Create alt text describing the page
         alt_text = f"Page {i} of SCC {sample_id} bilingual document"
-        html += f"""    <figure style="margin: 0;">
-      <img src="{rel_path}" alt="{alt_text}" style="width: 100%; border: 1px solid #ddd; border-radius: 4px;">
-      <figcaption style="text-align: center; font-size: 0.85em; color: #666; margin-top: 0.5rem;">Page {i}</figcaption>
-    </figure>
+        html += f"""    <div style="overflow: hidden;">
+      <figure style="margin: 0;">
+        <img src="{rel_path}" alt="{alt_text}" style="width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px; display: block;">
+        <figcaption style="text-align: center; font-size: 0.8em; color: #666; margin-top: 0.4rem;">Page {i}</figcaption>
+      </figure>
+    </div>
 """
 
     html += """  </div>
