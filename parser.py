@@ -46,8 +46,10 @@ _LINE_MARKER = re.compile(r"^\s*\[(\d+)\]\s?")
 # Patron de sous-titre du plan CSC : « II. … », « A. … », « (1) … »,
 # « (a) … », « (i) … ». Même police/taille/marge que le corps — c'est le
 # patron + la position (juste avant un [N]) qui les identifient.
+# Patron de sous-titre numéroté. La parenthèse ouvrante est **optionnelle** :
+# l'anglais écrit « (a) … » / « (1) … » mais le français « a) … » / « (1) … ».
 _HEADING = re.compile(
-    r"^\s*(?:[IVXL]+\.|[A-Z]\.|\(\d+\)|\([a-z]\)|\([ivxl]+\))\s+\S"
+    r"^\s*(?:[IVXL]+\.|[A-Z]\.|\(?\d+\)|\(?[a-z]\)|\(?[ivxl]+\))\s+\S"
 )
 
 # Queue à retirer du dernier paragraphe : dispositif puis liste des procureurs.
@@ -281,7 +283,7 @@ def _parse_opinions(pages) -> List[_Opinion]:
 # 3. Paragraphes
 # --------------------------------------------------------------------------- #
 # Type de la sortie de _extract_paragraphs : n -> (runs, sous-titres).
-_ParaData = "tuple[List[TextRun], List[str]]"
+_ParaData = "tuple[List[TextRun], List[str], List[str]]"  # runs, titres, candidats
 
 
 def _word_style(word: dict) -> tuple[bool, bool]:
@@ -355,63 +357,213 @@ def _strip_tail_runs(runs: List[TextRun]) -> List[TextRun]:
     return out
 
 
+# Fin de phrase, deux formes :
+#   • « .?! » + guillemets fermants éventuels (« threshold. », « Act? », « … 393). ») ;
+#   • une parenthèse/crochet fermant précédé d'un caractère **autre que « . »**
+#     (« … p. 154) » = fin de citation).
+# On exclut ainsi « … JJ.A.) » / « … para. 38.] » (« .) » / « .] » = abréviation
+# dans une parenthèse, débordement de titre) qui ne sont PAS des fins de phrase.
+_SENT_END = re.compile(r"[.?!][\"'”’»]*$|[^.\s][)\]][\"'”’»]*$")
+_COLON_END = re.compile(r":\s*$")
+_DASH_END = re.compile(r"—\s*$")  # ligne d'auteur d'opinion (lead-in)
+_BARE_MARK = re.compile(r"\[\d+\]")
+
+
+def _find_boundary(lines: List[tuple]) -> Optional[int]:
+    """Index de la dernière ligne de **prose** (fin de phrase ou « : »).
+
+    Les lignes au **préfixe de plan** sont ignorées : un titre peut finir par
+    « ? » (« A. … de la Loi? ») sans être une fin de prose. Le débordement d'un
+    titre finissant par « .) » (« … JJ.A.) ») n'est pas non plus une frontière —
+    c'est `_SENT_END` qui l'écarte (« .) » ≠ fin de phrase, contrairement à
+    « ). »). Tout ce qui suit la frontière = le bloc de sous-titres.
+
+    NB : on n'essaie PAS de « suivre » les débordements de titre ici. Une ligne
+    de prose-citation commençant par une initiale (« J. P. J. Maingot, … »)
+    matche `_HEADING` par accident ; la sauter est sans conséquence (elle ne
+    finit pas une phrase), mais propager un état « titre en cours » avalerait la
+    vraie fin de phrase suivante."""
+    boundary = None
+    for i, (text, _w) in enumerate(lines):
+        if _HEADING.match(text):
+            continue
+        t = text.rstrip()
+        if _SENT_END.search(t) or _COLON_END.search(t):
+            boundary = i
+    return boundary
+
+
+def _strip_lead_in(block: List[tuple]) -> List[tuple]:
+    """Retire le lead-in d'opinion (jusqu'à la dernière ligne d'auteur « — »)."""
+    start = 0
+    for i, (text, _w) in enumerate(block):
+        if _DASH_END.search(text.rstrip()):
+            start = i + 1
+    return block[start:]
+
+
+def _is_heading_block(block: List[tuple]) -> bool:
+    """Le bloc commence-t-il par un vrai sous-titre ?
+
+    Un sous-titre commence soit par un **préfixe de plan**, soit (non numéroté)
+    par une **ligne courte commençant par une lettre** (« Charter Interpretation »,
+    « Definition »). Un bloc cité qui a fui (prose pleine largeur, ou ligne de
+    citation « (Voir… » / note « [Nous soulignons.] ») est rejeté → il reste dans
+    le paragraphe précédent."""
+    for text, words in _strip_lead_in(block):
+        t = text.strip()
+        if not t:
+            continue
+        if _HEADING.match(text):
+            return True
+        return _line_x1(words) <= _FULL_WIDTH and t[:1].isalpha()
+    return False
+
+
+def _block_split(lines: List[tuple]) -> tuple:
+    """(prose, bloc-titre) d'un segment. Le bloc-titre = lignes après la
+    frontière de prose, **si elles forment un vrai bloc de sous-titres**. Sinon
+    tout reste en prose : frontière finissant par « : » (liste/citation
+    énumérée), ou bloc cité ayant fui (`_is_heading_block`)."""
+    b = _find_boundary(lines)
+    if b is None or _COLON_END.search(lines[b][0].rstrip()):
+        return lines, []
+    tail = lines[b + 1 :]
+    if not _is_heading_block(tail):
+        return lines, []
+    return lines[: b + 1], tail
+
+
+_FULL_WIDTH = 490  # x1 au-delà duquel une ligne est « pleine » (donc déborde)
+# Une opinion longue imprime sa propre table des matières (avec n° de page) entre
+# le lead-in et son 1er paragraphe : ce n'est PAS un sous-titre à capter.
+_PRINTED_TOC = re.compile(r"TABLE\s+(?:OF\s+CONTENTS|DES\s+MATIÈRES)", re.IGNORECASE)
+# Année seule entre parenthèses → signature de citation (« (2023), 101 R. … »).
+# « (2022 QCCA 185) » d'un vrai titre ne matche pas (chiffres après l'année).
+_CITATION_YEAR = re.compile(r"\((?:19|20)\d{2}\)")
+
+
+def _line_x1(words: List[dict]) -> float:
+    return max((w["x1"] for w in words), default=0.0)
+
+
+def _split_into_headings(block: List[tuple]) -> List[str]:
+    """Regroupe un bloc-titre en sous-titres.
+
+    Retire d'abord le lead-in d'opinion (jusqu'à la dernière ligne d'auteur
+    finissant par « — »). Puis : un nouveau sous-titre commence à chaque ligne au
+    préfixe de plan, ou à un titre **non numéroté** (« Charter Interpretation »,
+    « Definition »). Une ligne sans préfixe ne **prolonge** le titre précédent
+    que si celui-ci était **pleine largeur** (il a donc débordé) — sinon c'est un
+    nouveau titre non numéroté. Cela distingue « a) Souveraineté… / parlementaire »
+    (débordement) de « A. … Privilege / Definition » (deux titres)."""
+    block = _strip_lead_in(block)
+    # Table des matières imprimée de l'opinion → on n'en tire aucun sous-titre.
+    if any(_PRINTED_TOC.search(text) for text, _w in block):
+        return []
+
+    headings: List[str] = []
+    prev_full = False
+    for text, words in block:
+        t = re.sub(r"\s+", " ", text).strip()
+        if not t:
+            continue
+        is_prefix = bool(_HEADING.match(text))
+        if headings and not is_prefix and prev_full:
+            headings[-1] = f"{headings[-1]} {t}"  # débordement du titre précédent
+        else:
+            headings.append(t)  # préfixe, 1re ligne, ou nouveau titre non numéroté
+        prev_full = _line_x1(words) > _FULL_WIDTH
+    # Écarte les fragments de citation captés à tort : parenthèses imbriquées
+    # (« … (G. Boniface)). ») ou année entre parenthèses (« … (2023), 101 R. du
+    # B. can. … ») — un vrai sous-titre n'a ni « )) » ni « (AAAA) » isolée.
+    return [h for h in headings if "))" not in h and not _CITATION_YEAR.search(h)]
+
+
+def _lines_to_runs(lines: List[tuple]) -> List[TextRun]:
+    """Construit les runs d'un paragraphe ; retire le marqueur « [N] » initial."""
+    runs: List[TextRun] = []
+    for idx, (_text, words) in enumerate(lines):
+        ws = words
+        if idx == 0 and ws and _BARE_MARK.fullmatch(ws[0]["text"]):
+            ws = ws[1:]
+        runs.extend(_line_runs(ws))
+    return _normalize_runs(runs)
+
+
+def _candidate_block(lines: List[tuple]) -> List[tuple]:
+    """Bloc-titre **permissif** en fin de segment (avant le marqueur suivant).
+
+    Trouvé en **remontant** : la dernière ligne (juste avant « [N] ») est toujours
+    incluse — c'est le titre ou sa dernière ligne de débordement ; on continue de
+    remonter sur les lignes au **préfixe de plan** et sur les lignes qui ne
+    **terminent pas** une phrase (débordements de titre, titre non numéroté qui
+    déborde) ; on s'arrête à la 1re ligne de **prose** finissant une phrase.
+
+    Récupère les titres que `_block_split` rejette (garde `_is_heading_block`, ou
+    frontière placée sur un débordement finissant par « ). », ex. « (la juge
+    Dysart). »). N'est utilisé qu'en **réconciliation** (l'autre langue confirme)."""
+    block: List[tuple] = []
+    for text, words in reversed(lines):
+        if _LINE_MARKER.match(text):
+            break  # ne pas avaler la ligne du marqueur « [N] »
+        t = text.rstrip()
+        ends = bool(_SENT_END.search(t) or _COLON_END.search(t))
+        if block and not _HEADING.match(text) and ends:
+            break  # ligne de prose au-dessus du bloc de titres
+        block.append((text, words))
+    block.reverse()
+    return block
+
+
 def _extract_paragraphs(pages) -> Dict[int, "_ParaData"]:
     """Extrait, par numéro, les fragments stylés du paragraphe et ses sous-titres.
 
-    Travail **ligne à ligne** sur les mots (avec leur police) — et non sur le
-    texte aplati — pour (a) isoler les sous-titres et (b) conserver les
-    italiques/gras. Un sous-titre candidat (patron de plan) n'est validé que
-    s'il précède immédiatement un marqueur « [N] » ; sinon il est réabsorbé dans
-    la prose (écarte « N. Metallic, … » et autres initiales d'auteurs).
-    """
-    body_lines: List[tuple[str, List[dict]]] = []  # (texte de ligne, mots)
+    Travail **ligne à ligne** sur les mots (avec police) pour conserver les
+    italiques/gras. Découpe le corps en segments par marqueur « [N] » séquentiel
+    (écarte les années « [2017] »). Le **bloc de sous-titres** d'un paragraphe =
+    tout ce qui suit la dernière phrase du paragraphe précédent, jusqu'à son
+    marqueur — voir `_block_split` / `_split_into_headings`."""
+    body_lines: List[tuple[str, List[dict]]] = []
     for p in pages:
         for row in _lines(p.extract_words(extra_attrs=["fontname"])):
             body_lines.append((row["text"], row["words"]))
 
-    paras: Dict[int, dict] = {}  # n -> {"runs": [...], "headings": [...]}
-    order: List[int] = []
+    # Segments : lignes de [N] (incluse) jusqu'avant [N+1]. `pre` = avant [1].
+    pre: List[tuple] = []
+    segments: List[dict] = []
     expected = 1
-    current: Optional[int] = None
-    buffer: List[tuple[str, List[dict]]] = []  # sous-titres candidats
-
+    cur: Optional[dict] = None
     for text, words in body_lines:
         m = _LINE_MARKER.match(text)
         if m and int(m.group(1)) == expected:
-            n = expected
-            body_words = words
-            if body_words and re.fullmatch(r"\[\d+\]", body_words[0]["text"]):
-                body_words = body_words[1:]  # retire le marqueur « [N] »
-            paras[n] = {
-                "runs": _line_runs(body_words),
-                "headings": [t.strip() for t, _w in buffer],
-            }
-            order.append(n)
-            buffer = []
-            current = n
+            cur = {"n": expected, "lines": [(text, words)]}
+            segments.append(cur)
             expected += 1
-            continue
-        if _HEADING.match(text):
-            buffer.append((text, words))
-            continue
-        # Prose : des titres candidats en attente étaient en fait de la prose.
-        if buffer and current is not None:
-            for _t, w in buffer:
-                paras[current]["runs"].extend(_line_runs(w))
-        buffer = []
-        if current is not None:
-            paras[current]["runs"].extend(_line_runs(words))
+        elif cur is None:
+            pre.append((text, words))
+        else:
+            cur["lines"].append((text, words))
 
-    if buffer and current is not None:  # candidats résiduels en toute fin
-        for _t, w in buffer:
-            paras[current]["runs"].extend(_line_runs(w))
+    if not segments:
+        return {}
 
+    # Le bloc-titre en fin d'un segment appartient au paragraphe SUIVANT.
+    _, pending = _block_split(pre)  # titres confirmés du 1er paragraphe
+    pending_cand = _candidate_block(pre)  # titres candidats (réconciliation)
     result: Dict[int, "_ParaData"] = {}
-    for i, n in enumerate(order):
-        runs = _normalize_runs(paras[n]["runs"])
-        if i + 1 == len(order):  # dernier paragraphe → nettoyer la queue
+    for i, seg in enumerate(segments):
+        prose, tail = _block_split(seg["lines"])
+        runs = _lines_to_runs(prose)
+        if i + 1 == len(segments):  # dernier paragraphe → nettoyer la queue
             runs = _strip_tail_runs(runs)
-        result[n] = (runs, paras[n]["headings"])
+        result[seg["n"]] = (
+            runs,
+            _split_into_headings(pending),
+            _split_into_headings(pending_cand),
+        )
+        pending = tail
+        pending_cand = _candidate_block(seg["lines"])
     return result
 
 
@@ -457,7 +609,7 @@ def _extract_lead_ins(pages, opinions: List[_Opinion]) -> Dict[int, str]:
 
 
 def _make_paragraph(number: int, data: "_ParaData") -> Paragraph:
-    runs, headings = data
+    runs, headings, candidates = data
     text = _runs_text(runs).strip()
     return Paragraph(
         number=number,
@@ -465,6 +617,7 @@ def _make_paragraph(number: int, data: "_ParaData") -> Paragraph:
         contains_quote=any(q in text for q in _QUOTE_CHARS),
         contains_citation=bool(_CITATION_HINT.search(text)),
         headings=headings,
+        heading_candidates=candidates,
         runs=runs,
     )
 

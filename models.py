@@ -44,6 +44,11 @@ class Paragraph:
     # précèdent ce paragraphe dans le corps. Plusieurs niveaux peuvent
     # s'empiler avant un même paragraphe.
     headings: List[str] = field(default_factory=list)
+    # Sous-titres « candidats » : extraction permissive du bloc avant ce
+    # paragraphe, utilisée seulement en réconciliation bilingue (l'Aligner les
+    # promeut si l'autre langue confirme un sous-titre à ce numéro). Voir
+    # parser._candidate_block et aligner._reconcile_headings.
+    heading_candidates: List[str] = field(default_factory=list)
     # Texte découpé en fragments stylés (italique/gras) pour le rendu fidèle.
     runs: List[TextRun] = field(default_factory=list)
 

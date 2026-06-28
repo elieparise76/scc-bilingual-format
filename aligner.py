@@ -19,6 +19,28 @@ def _section_index(decision: Decision) -> Dict[int, Section]:
     return {p.number: s for s in decision.sections for p in s.paragraphs}
 
 
+def _reconcile_headings(
+    fr_paras: Dict[int, Paragraph], en_paras: Dict[int, Paragraph]
+) -> None:
+    """Réconciliation bilingue des sous-titres (par numéro de paragraphe).
+
+    Les décisions CSC sont structurellement parallèles : un sous-titre à ¶N
+    existe dans les deux langues. La détection mono-langue est fragile (titres
+    non numérotés en anglais, débordements de citation finissant par « ). » ou
+    « .) » selon la langue) → chaque langue en manque quelques-uns *différents*.
+
+    Là où **une langue a un sous-titre confirmé** à ¶N et **l'autre aucun**, on
+    **promeut le candidat** de l'autre langue (extraction permissive, l'autre
+    langue servant de vérité terrain). On ne touche pas aux ¶ où les deux ont
+    déjà détecté un sous-titre."""
+    for n in set(fr_paras) & set(en_paras):
+        fr, en = fr_paras[n], en_paras[n]
+        if fr.headings and not en.headings and en.heading_candidates:
+            en.headings = en.heading_candidates
+        elif en.headings and not fr.headings and fr.heading_candidates:
+            fr.headings = fr.heading_candidates
+
+
 def align(decision_fr: Decision, decision_en: Decision) -> List[AlignedSection]:
     """Apparie ¶N_FR ↔ ¶N_EN, regroupé par section.
 
@@ -35,6 +57,7 @@ def align(decision_fr: Decision, decision_en: Decision) -> List[AlignedSection]:
     """
     fr_paras = _para_index(decision_fr)
     en_paras = _para_index(decision_en)
+    _reconcile_headings(fr_paras, en_paras)
     fr_sec = _section_index(decision_fr)
     en_sec = _section_index(decision_en)
 
