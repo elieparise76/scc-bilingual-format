@@ -134,28 +134,32 @@ def extract_pages_as_images(pdf_path: Path, output_dir: Path, num_pages: int = 4
 
 
 def generate_html_gallery(images: list[Path], sample_id: str) -> str:
-    """Generate an HTML/Markdown snippet for a 2x2 grid gallery."""
+    """Generate an HTML table for a 2x2 grid gallery."""
     html = f"""<!-- Generated preview of SCC {sample_id} -->
-<div id="scc-preview-gallery" style="max-width: 700px;">
-  <p><em>Preview of the bilingual document (first {len(images)} pages, French left / English right):</em></p>
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0;">
+<p><em>Preview of the bilingual document (first {len(images)} pages, French left / English right):</em></p>
+
+| | |
+|---|---|
 """
 
-    for i, img in enumerate(images, 1):
-        rel_path = img.relative_to(Path(__file__).parent)
-        # Create alt text describing the page
-        alt_text = f"Page {i} of SCC {sample_id} bilingual document"
-        html += f"""    <div style="overflow: hidden;">
-      <figure style="margin: 0;">
-        <img src="{rel_path}" alt="{alt_text}" style="width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px; display: block;">
-        <figcaption style="text-align: center; font-size: 0.8em; color: #666; margin-top: 0.4rem;">Page {i}</figcaption>
-      </figure>
-    </div>
-"""
+    # Generate table rows (2 columns)
+    for i in range(0, len(images), 2):
+        left_img = images[i]
+        left_path = left_img.relative_to(Path(__file__).parent)
+        left_alt = f"Page {i+1}"
 
-    html += """  </div>
-</div>
-"""
+        row = f"| ![{left_alt}]({left_path}) |"
+
+        if i + 1 < len(images):
+            right_img = images[i + 1]
+            right_path = right_img.relative_to(Path(__file__).parent)
+            right_alt = f"Page {i+2}"
+            row += f" ![{right_alt}]({right_path}) |"
+        else:
+            row += " |"
+
+        html += row + "\n"
+
     return html
 
 
